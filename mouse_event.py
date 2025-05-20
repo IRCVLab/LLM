@@ -5,13 +5,10 @@ from PyQt5.QtWidgets import QGraphicsView
 
 
 class QtMouseEventFilter(QObject):
-    """
-    Generic event filter for Qt widgets to capture mouse events.
-    Install via: widget.installEventFilter(filter_instance)
-    """
-    clicked = pyqtSignal(float, float, int)       # x, y, button
-    doubleClicked = pyqtSignal(float, float, int) # x, y, button
-    rightClicked = pyqtSignal(float, float)       # x, y
+    
+    clicked = pyqtSignal(float, float, int)
+    doubleClicked = pyqtSignal(float, float, int)
+    rightClicked = pyqtSignal(float, float)
 
     def eventFilter(self, obj, event):
         if isinstance(event, QMouseEvent):
@@ -28,9 +25,6 @@ class QtMouseEventFilter(QObject):
 
 
 class ClickableGraphicsView(QGraphicsView):
-    """
-    Subclass of QGraphicsView emitting signals on mouse events in scene coords.
-    """
     clicked = pyqtSignal(float, float, int)
     doubleClicked = pyqtSignal(float, float)
     rightClicked = pyqtSignal(float, float)

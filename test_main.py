@@ -17,54 +17,44 @@ class ImageLabelerWindow(QMainWindow):
         self.setWindowTitle("Lane Labeler")
         self.resize(800, 600)
 
-        # 중앙 위젯 및 레이아웃
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # QGraphicsView/Scene 준비
         self.view = QGraphicsView()
         layout.addWidget(self.view)
 
         self.scene = QGraphicsScene(self)
         self.view.setScene(self.scene)
 
-        # 배경 이미지
         pixmap = QPixmap(image_path)
         self.scene.addItem(QGraphicsPixmapItem(pixmap))
 
-        # Add Curve 버튼
         self.btn_add = QPushButton("Add Curve")
         layout.addWidget(self.btn_add)
 
-        # 라벨 점 저장
         self.points = []
 
-        # 이벤트 필터 설치
         self.mouse_filter = QtMouseEventFilter()
         self.view.viewport().installEventFilter(self.mouse_filter)
 
-        # 시그널 연결
         self.mouse_filter.clicked.connect(self.on_click)
         self.btn_add.clicked.connect(self.on_add_curve)
 
     def on_click(self, x: float, y: float, button: int):
-        # 좌클릭만 처리
         if button != Qt.LeftButton:
             return
-        # 씬 좌표로 변환 필요 없이 eventFilter gives viewport coords;
-        # map to scene
+        
         scene_pt = self.view.mapToScene(int(x), int(y))
         sx, sy = scene_pt.x(), scene_pt.y()
 
-        # 파란 점 표시
         r = 5
         ellipse = QGraphicsEllipseItem(sx-r, sy-r, r*2, r*2)
         pen = QPen(QColor('blue'))
         pen.setWidth(2)
         ellipse.setPen(pen)
         from PyQt5.QtGui import QBrush
-        ellipse.setBrush(QBrush())  # transparent brush
+        ellipse.setBrush(QBrush())
         self.scene.addItem(ellipse)
 
         self.points.append((sx, sy))
@@ -75,10 +65,8 @@ class ImageLabelerWindow(QMainWindow):
             print("Need at least 2 points to fit a curve.")
             return
 
-        # 다항식 보간
         x_lin, y_lin = centripetal_catmull_rom(self.points)
 
-        # QPainterPath로 곡선 그리기
         path = QPainterPath()
         path.moveTo(x_lin[0], y_lin[0])
         for x, y in zip(x_lin[1:], y_lin[1:]):
