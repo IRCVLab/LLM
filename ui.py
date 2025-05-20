@@ -17,6 +17,11 @@ import numpy as np
 import random
 #from threading import Timer
 
+from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+import vtk
+import open3d as o3d
+import matplotlib.cm as cm
+import matplotlib.colors as colors
 
 # Personnal modules
 from marker import DraggablePoint
@@ -257,9 +262,21 @@ class Window(QWidget):
         rightLayout.addSpacing(20)
         rightLayout.addSpacerItem(verticalSpacer)
         rightLayout.addLayout(saveLayout)
-
+        
+        # LiDAR widget
+        # self.vtk_actor = vtk.vtkActor()
+        self.vtkWidget = QVTKRenderWindowInteractor(self)
+        self.vtkRenderer = vtk.vtkRenderer()
+        self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
+        self.addPointCloudToVTK()
+        
+        pcdWidget = QWidget()
+        pcdWidget.setLayout(QVBoxLayout())
+        pcdWidget.layout().addWidget(self.vtkWidget)
+        
         layout = QHBoxLayout()
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.canvas, 3)
+        layout.addWidget(pcdWidget, 2)
         layout.addLayout(rightLayout)
         self.setLayout(layout)
 
@@ -289,7 +306,79 @@ class Window(QWidget):
         layout.addLayout(lowerLayout)
         self.setLayout(layout)
         """
+        
+    def addPointCloudToVTK(self, pcd_path='000000.pcd'):
+        pcd = o3d.t.io.read_point_cloud(pcd_path)
+        np_points = pcd.point.positions.numpy()
+        
+        vtk_points = vtk.vtkPoints()
+        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_colors.SetNumberOfComponents(3)
+        vtk_colors.SetName("Colors")
+        
+        # Normalize intensity to [0, 1]
+        np_colors = pcd.point.colors.numpy() 
+        
+        for pt, rgb in zip(np_points, np_colors):
+            vtk_points.InsertNextPoint(*pt)
+            vtk_colors.InsertNextTuple3(*rgb)
 
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+        polydata.GetPointData().SetScalars(vtk_colors)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetPointSize(2)
+
+        self.vtkRenderer.AddActor(actor)
+        self.vtkRenderer.ResetCamera()
+        
+        style = vtk.vtkInteractorStyleTrackballCamera()
+        style.SetMotionFactor(4)
+        self.vtkWidget.GetRenderWindow().GetInteractor().SetInteractorStyle(style)
+
+        self.vtkRenderer.GetActiveCamera().Zoom(1.2)
+        
+        self.vtkWidget.GetRenderWindow().Render()
+
+    def updatePointCloud(self, pcd_root='000000.pcd', index=0):
+        pcd_file = self.list_img_path[index].replace(".jpg", ".pcd").replace(".png", ".pcd")
+        full_path = os.path.join(pcd_root, pcd_file)
+
+        if not os.path.exists(full_path):
+            print("PCD not found:", full_path)
+            return
+
+        pcd = o3d.io.read_point_cloud(full_path)
+        np_points = np.asarray(pcd.points)
+
+        vtk_points = vtk.vtkPoints()
+        for pt in np_points:
+            vtk_points.InsertNextPoint(pt[0], pt[1], pt[2])
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        self.vtk_actor.SetMapper(mapper)
+        self.vtk_renderer.ResetCamera()
+        self.vtkWidget.GetRenderWindow().Render()
+
+        
     def fastDraw(self, canvas):
         ''' for faster scene update '''
         self.canvas.setUpdatesEnabled(False)
