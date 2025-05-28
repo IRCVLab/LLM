@@ -31,7 +31,7 @@ from marker import DraggablePoint
 from updater import DelayedUpdater
 from mouse_event import QtMouseEventFilter
 from polynomial import centripetal_catmull_rom
-from calibration import load_calibration_params, lane_points_3d_from_pcd_and_lane
+from calibration import load_calibration_params, lane_points_3d_from_pcd_and_lane, lidar_points_in_image
 
 # set initial 4 points
 x1=800
@@ -90,6 +90,15 @@ class Window(QWidget):
         ])
 
         self.loadImg(self.img_path)
+
+
+        # LiDAR widget
+        # self.vtk_actor = vtk.vtkActor()
+        self.vtkWidget = QVTKRenderWindowInteractor(self)
+        self.vtkRenderer = vtk.vtkRenderer()
+        self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
+        self.addPointCloudToVTK()
+
 
         self.plotBackGround(self.img_path,0,True)
 
@@ -235,16 +244,8 @@ class Window(QWidget):
         rightLayout.addSpacerItem(verticalSpacer)
         rightLayout.addLayout(saveLayout)
         
-        # LiDAR widget
-        # self.vtk_actor = vtk.vtkActor()
-        self.vtkWidget = QVTKRenderWindowInteractor(self)
-        self.vtkRenderer = vtk.vtkRenderer()
-        self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
-        self.addPointCloudToVTK()
-        # 2) 예를 들어 두 점 사이를 잇는 선
-        line_pts = [(0,0,0), (1,1,0), (2,1,1)]
-        self.addPolyLine(line_pts, color=(1,0,0), width=3)
         
+
         pcdWidget = QWidget()
         pcdWidget.setLayout(QVBoxLayout())
         pcdWidget.layout().addWidget(self.vtkWidget)
@@ -311,13 +312,21 @@ class Window(QWidget):
         pcd = o3d.t.io.read_point_cloud(pcd_path)
         np_points = pcd.point.positions.numpy()
         
+
+        if "colors" in pcd.point:
+            np_colors = pcd.point.colors.numpy()
+            np_colors = (np_colors * 255).astype(np.uint8)
+        else:
+            # 기본 회색 (R, G, B)
+            np_colors = np.full((np_points.shape[0], 3), 128, dtype=np.uint8)
+
         vtk_points = vtk.vtkPoints()
         vtk_colors = vtk.vtkUnsignedCharArray()
         vtk_colors.SetNumberOfComponents(3)
         vtk_colors.SetName("Colors")
         
         # Normalize intensity to [0, 1]
-        np_colors = pcd.point.colors.numpy() 
+        # np_colors = pcd.point.colors.numpy() 
         
         for pt, rgb in zip(np_points, np_colors):
             vtk_points.InsertNextPoint(*pt)
@@ -554,7 +563,8 @@ class Window(QWidget):
 
                 # for faster scene update
                 self.canvas.setUpdatesEnabled(True)
-
+                self.vtkRenderer.RemoveAllViewProps() 
+                self.addPointCloudToVTK(self.imgIndex)
 
     def loadNextImage(self):
         self.saveAll(self.img_path)
@@ -1296,9 +1306,8 @@ class Window(QWidget):
         else:
             points_3d = lane_points_3d.T
 
-        # points_3d_vtk = np.stack([points_3d[:, 2], points_3d[:, 1], points_3d[:, 0]], axis=1)
-        self.addLanePointsToVTK(points_3d, color=(1,0,0), size=5)
 
+        self.addLanePointsToVTK(points_3d, color=(1,0,0), size=3)
 
     def on_mpl_click(self, event):
         if event.button != 1:
