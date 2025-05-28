@@ -2,7 +2,7 @@ import numpy as np
 import cv2 
 import open3d as o3d
 import matplotlib.pyplot as plt
-
+import io
 
 def load_calibration_params():
     k = np.load("./calibration/k.npy")
@@ -11,7 +11,7 @@ def load_calibration_params():
     distortion = np.load(f"./calibration/distortion.npy")
     return t, r, k, distortion
 
-def create_lane_mask(image_shape, lane_points, thickness=30):
+def create_lane_mask(image_shape, lane_points, thickness=1):
 
     mask = np.zeros(image_shape[:2], dtype=np.uint8)
     pts = np.array(lane_points, dtype=np.int32).reshape(-1, 1, 2)
@@ -37,15 +37,9 @@ def lane_points_3d_from_pcd_and_lane(
     r_lidar_to_camera_coordinate, 
     t_lidar_to_camera_coordinate, 
     lane_polyline_img_coords,
-    lane_thickness=30):
+    lane_thickness=1):
 
-    ax = np.array([
-        [0, 0, 1],
-        [-1, 0, 0],
-        [0, -1, 0]
-    ])
-     
-    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000
+    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000.0
     # keep points that are in front of LiDAR
     points_in_front_of_lidar = []
     for point_i in point_cloud:
@@ -61,13 +55,14 @@ def lane_points_3d_from_pcd_and_lane(
     points_in_image = points_in_image / points_in_image[2, :]
     points_in_image = points_in_image[0:2, :]
     points_in_image = points_in_image.T
- 
+
+
     fused_points = []
 
     for i, point_img in enumerate(points_in_image):
         if (0 <= point_img[0] < rgb_image.shape[1]) and (0 <= point_img[1] < rgb_image.shape[0]):
             fused_points.append((point_img[0], point_img[1], points_in_camera_coordinate[2, i]))
-            
+
     fused_points = np.array(fused_points)
 
     # 이미지 크기의 빈 곳은 0, 레인 위는 1인 마스크 생성
@@ -85,6 +80,74 @@ def lane_points_3d_from_pcd_and_lane(
     points_in_image_homo = np.concatenate([points_in_image, homo], axis=1)
     s = np.expand_dims(depth_inside_image, axis=0)
     points_in_camera_homo = np.linalg.inv(k) @ points_in_image_homo.T * s
-    points_in_camera_homo = ax @ points_in_camera_homo
+    points_in_lidar_homo = np.linalg.inv(r_lidar_to_camera_coordinate) @ (points_in_camera_homo - t_lidar_to_camera_coordinate)
+
+
+    return points_in_lidar_homo
+
+
+
+def get_img_from_fig(fig, dpi=180):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    buf.seek(0)
+    img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+    buf.close()
+    img = cv2.imdecode(img_arr, 1)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    return img
+
+
+def lidar_points_in_image(
+    rgb_image, 
+    point_cloud,
+    k,
+    r_lidar_to_camera_coordinate,
+    t_lidar_to_camera_coordinate, 
+):
+    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000
+
+    # keep points that are in front of LiDAR
+    points_in_front_of_lidar = []
+    for point_i in point_cloud:
+        if point_i[0] >= 0:
+            points_in_front_of_lidar.append(point_i)
+    point_cloud = np.array(points_in_front_of_lidar)
     
-    return points_in_camera_homo
+    # translate lidar points to camera coordinate system
+    points_in_camera_coordinate = np.dot(r_lidar_to_camera_coordinate, point_cloud.T) + t_lidar_to_camera_coordinate
+
+    # project points form camera coordinate to image
+    points_in_image = np.dot(k, points_in_camera_coordinate)
+    points_in_image = points_in_image / points_in_image[2, :]
+    points_in_image = points_in_image[0:2, :]
+    points_in_image = points_in_image.T
+    
+    # keep points that are inside image
+    points_inside_image = []
+    depth_inside_image = []
+    
+    for i, point_i in enumerate(points_in_image):
+        if (0 <= point_i[0] < rgb_image.shape[1]) and (0 <= point_i[1] < rgb_image.shape[0]):
+            points_inside_image.append(point_i)
+            depth_inside_image.append(points_in_camera_coordinate[2, i])
+    
+    points_in_image = np.array(points_inside_image)
+    depth_inside_image = np.array(depth_inside_image)
+    
+    homo = np.ones((points_in_image.shape[0], 1))
+    points_in_image_homo = np.concatenate([points_in_image, homo], axis=1)
+    s = np.expand_dims(depth_inside_image, axis=0)
+    points_in_camera_homo = np.linalg.inv(k) @ points_in_image_homo.T * s
+    points_in_lidar_homo = np.linalg.inv(r_lidar_to_camera_coordinate) @ (points_in_camera_homo - t_lidar_to_camera_coordinate)
+
+    return points_in_lidar_homo
+    # fig = plt.figure()
+    # plt.imshow(rgb_image)
+    # plt.scatter(points_in_image[:, 0].tolist(), points_in_image[:, 1].tolist(), c=depth_inside_image, s=3)
+    # ax = plt.gca()
+    # ax.axes.xaxis.set_ticks([])
+    # ax.axes.yaxis.set_ticks([])
+    # img_lidar_points = get_img_from_fig(fig=fig, dpi=500)
+
