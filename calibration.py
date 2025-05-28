@@ -1,31 +1,90 @@
-# pcd_mapping.py
 import numpy as np
-from scipy.spatial import cKDTree
+import cv2 
 import open3d as o3d
-import json
+import matplotlib.pyplot as plt
 
-def map_lane_to_pcd(pcd, lane_uv, pixel_thresh=2.0):
 
-    with open("cal_parameter.json", 'r', encoding='utf-8') as f:
-        C = json.load(f)
+def load_calibration_params():
+    k = np.load("./calibration/k.npy")
+    r = np.load("./calibration/r.npy")
+    t = np.load("./calibration/t.npy")
+    distortion = np.load(f"./calibration/distortion.npy")
+    return t, r, k, distortion
 
-    extrinsic = np.array(C['extrinsic'], dtype=float)
-    intrinsic = np.array(C['intrinsic'], dtype=float)
+def create_lane_mask(image_shape, lane_points, thickness=30):
+
+    mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    pts = np.array(lane_points, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.polylines(mask, [pts], isClosed=False, color=1, thickness=thickness)
+    # plt.imshow(mask, cmap='gray')
+    # plt.title('Lane Mask')
+    # plt.show()
+    return mask
+
+def filter_points_on_lane(points_in_image, lane_mask):
+
+    indices = []
+    for i, (x, y, z) in enumerate(points_in_image.astype(int)):
+        if 0 <= x < lane_mask.shape[1] and 0 <= y < lane_mask.shape[0]:
+            if lane_mask[y, x] > 0:
+                indices.append(i)
+    return indices
+
+def lane_points_3d_from_pcd_and_lane(
+    rgb_image, 
+    point_cloud, 
+    k, 
+    r_lidar_to_camera_coordinate, 
+    t_lidar_to_camera_coordinate, 
+    lane_polyline_img_coords,
+    lane_thickness=30):
+
+    ax = np.array([
+        [0, 0, 1],
+        [-1, 0, 0],
+        [0, -1, 0]
+    ])
+     
+    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000
+    # keep points that are in front of LiDAR
+    points_in_front_of_lidar = []
+    for point_i in point_cloud:
+        if point_i[0] >= 0:
+            points_in_front_of_lidar.append(point_i)
+    point_cloud = np.array(points_in_front_of_lidar)
     
-    pts = np.asarray(pcd.points)
+    # image to camera coordinate system
+    points_in_camera_coordinate = np.dot(r_lidar_to_camera_coordinate, point_cloud.T) + t_lidar_to_camera_coordinate
 
-    ones = np.ones((len(pts),1))
-    pts_h = np.hstack([pts, ones])
-    cam_h = (extrinsic @ pts_h.T).T
-    cam = cam_h[cam_h[:,2] > 0, :3]
+    # project points form camera coordinate to image
+    points_in_image = np.dot(k, points_in_camera_coordinate)
+    points_in_image = points_in_image / points_in_image[2, :]
+    points_in_image = points_in_image[0:2, :]
+    points_in_image = points_in_image.T
+ 
+    fused_points = []
 
-    proj = intrinsic @ cam.T
-    proj /= proj[2:3,:]
-    uv_all = proj[:2,:].T
+    for i, point_img in enumerate(points_in_image):
+        if (0 <= point_img[0] < rgb_image.shape[1]) and (0 <= point_img[1] < rgb_image.shape[0]):
+            fused_points.append((point_img[0], point_img[1], points_in_camera_coordinate[2, i]))
+            
+    fused_points = np.array(fused_points)
 
-    tree = cKDTree(lane_uv)
-    dists, idxs = tree.query(uv_all, k=1)
-    mask = dists < pixel_thresh
+    # 이미지 크기의 빈 곳은 0, 레인 위는 1인 마스크 생성
+    lane_mask = create_lane_mask(rgb_image.shape, lane_polyline_img_coords, thickness=lane_thickness)
 
-    selected_pts = pts[cam[:,2]>0][mask]
-    return selected_pts
+    # fused point 에서 마스킹에 포함된 index 추출
+    lane_indices = filter_points_on_lane(fused_points, lane_mask)
+
+    lane_points_3d = fused_points[lane_indices]
+
+    points_in_image = lane_points_3d[:,:2]
+    depth_inside_image = lane_points_3d[:,2]
+
+    homo = np.ones((points_in_image.shape[0], 1))
+    points_in_image_homo = np.concatenate([points_in_image, homo], axis=1)
+    s = np.expand_dims(depth_inside_image, axis=0)
+    points_in_camera_homo = np.linalg.inv(k) @ points_in_image_homo.T * s
+    points_in_camera_homo = ax @ points_in_camera_homo
+    
+    return points_in_camera_homo

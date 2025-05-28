@@ -44,3 +44,12 @@ class ClickableGraphicsView(QGraphicsView):
             scene_pt = self.mapToScene(event.pos())
             self.doubleClicked.emit(scene_pt.x(), scene_pt.y())
         super().mouseDoubleClickEvent(event)
+
+    def on_mpl_click(self, event):
+        if event.button != 1:  # 1: left click
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        self.lane_points.append((event.xdata, event.ydata))
+        self.axes.plot(event.xdata, event.ydata, 'o', color='blue')
+        self.canvas.draw()

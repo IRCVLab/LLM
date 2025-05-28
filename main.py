@@ -14,11 +14,7 @@ def inputArg():
 
 
 if __name__ == "__main__":
-    # construct the argument parse and parse the arguments
-    # inputPath = inputArg()
     inputPath = "data"
-
-    # generate application window
     w = genWindow(inputPath)
 
 
