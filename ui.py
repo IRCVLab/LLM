@@ -6,21 +6,32 @@ matplotlib.use("Qt5Agg")
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush
 
-from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.path import Path
 import matplotlib.patches as patches
 import matplotlib.image as mpimg
 import numpy as np
-#import cv2
+import cv2
 import random
 #from threading import Timer
 
+from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+import vtk
+import open3d as o3d
+import matplotlib.cm as cm
+import matplotlib.colors as colors
 
 # Personnal modules
 from marker import DraggablePoint
 from updater import DelayedUpdater
+from mouse_event import QtMouseEventFilter
+from polynomial import centripetal_catmull_rom
+from calibration import load_calibration_params, lane_points_3d_from_pcd_and_lane
 
 # set initial 4 points
 x1=800
@@ -35,41 +46,15 @@ y3=300
 x4=200
 y4=500
 
-"""
-class DelayedUpdater(QObject):
-
-    def __init__(self, target, parent=None):
-        super(DelayedUpdater, self).__init__(parent)
-        self.target = target
-        target.installEventFilter(self)
-
-        self.delayEnabled = True
-        self.delayTimeout = 100
-
-        self._resizeTimer = QTimer()
-        self._resizeTimer.timeout.connect(self._delayedUpdate)
-
-    def eventFilter(self, obj, event):
-        if self.delayEnabled and obj is self.target:
-            if event.type() == event.Resize:
-                self._resizeTimer.start(self.delayTimeout)
-                self.target.setUpdatesEnabled(False)
-
-        return False
-
-    def _delayedUpdate(self):
-        #print("Performing actual update")
-        self._resizeTimer.stop()
-        self.target.setUpdatesEnabled(True)
-"""
-
 class Window(QWidget):
     imgIndex = -1
     saveFlag = True
 
     def __init__(self,path):
         super(Window,self).__init__()
-        self.img_path = os.getcwd()+os.sep+path
+        self.img_path = os.getcwd() + os.sep + path  # path는 'data'
+        self.img_dir = os.path.join(self.img_path, 'image')
+        self.pcd_dir = os.path.join(self.img_path, 'pcd')
 
         # a figure instance to plot on
         self.figure = Figure(tight_layout=True, dpi=96)
@@ -85,48 +70,40 @@ class Window(QWidget):
         self.canvas.setSizePolicy(sizePolicy)
         self.canvas.updateGeometry()
 
-        # self.resize(width,height)
-        # self.showFullScreen()
-        # self.showMaximized()
-
         # To store the draggable polygon
         self.list_points = []
         self.list_points_type = []
 
+        # calibration params
+        self.t, self.r, self.k, self.distortion = load_calibration_params()
+
         # To store img path
-        self.list_img_path = []
+        self.list_img_path = sorted([
+            f for f in os.listdir(self.img_dir)
+            if f.endswith('.jpg') or f.endswith('.png')
+        ])
 
-        # TODO: written for test
+        # PCD 파일명 리스트
+        self.list_pcd_path = sorted([
+            f for f in os.listdir(self.pcd_dir)
+            if f.endswith('.pcd')
+        ])
+
         self.loadImg(self.img_path)
-        # self.loadImg("/data/0001.jpg")
 
-        # To generate output path
-        """
-        if not os.path.exists(self.img_path+"label_txt"):
-            os.makedirs(self.img_path+"label_txt")
-
-        if not os.path.exists(self.img_path+"label_png"):
-            os.makedirs(self.img_path+"label_png")
-        """
-
-        # plot background image
         self.plotBackGround(self.img_path,0,True)
 
-        # Just some button connected to `plot` method
-
-
-
         addLaneLabel = QLabel()
-        addLaneLabel.setText("Label List")
+        addLaneLabel.setText("Label Setting")
 
         addLaneListButton = QComboBox()
         addLaneListButton.addItems(["---Select line type---","White line", "White dash line", "Yellow line"])
         addLaneListButton.activated.connect(self.addNewLine)
 
         lineGroupBox = QGroupBox("Line", self)
-        polygonGroupBox = QGroupBox("Polygon", self)
-        objectGroupBox = QGroupBox("Object", self)
-        pointGroupBox = QGroupBox("Point", self)
+        # polygonGroupBox = QGroupBox("Polygon", self)
+        # objectGroupBox = QGroupBox("Object", self)
+        # pointGroupBox = QGroupBox("Point", self)
 
         self.lineRadio1 = QRadioButton("Yellow Line", self)
         self.lineRadio1.setChecked(True)
@@ -139,41 +116,41 @@ class Window(QWidget):
         self.lineRadio3 = QRadioButton("White Dash Line", self)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
-        self.polygonRadio1 = QRadioButton("Crosswalk", self)
-        self.polygonRadio1.clicked.connect(self.radioButtonClicked)
+        # self.polygonRadio1 = QRadioButton("Crosswalk", self)
+        # self.polygonRadio1.clicked.connect(self.radioButtonClicked)
 
-        self.polygonRadio2 = QRadioButton("Stop Line", self)
-        self.polygonRadio2.clicked.connect(self.radioButtonClicked)
+        # self.polygonRadio2 = QRadioButton("Stop Line", self)
+        # self.polygonRadio2.clicked.connect(self.radioButtonClicked)
 
-        self.polygonRadio3 = QRadioButton("Speed Dump", self)
-        self.polygonRadio3.clicked.connect(self.radioButtonClicked)
+        # self.polygonRadio3 = QRadioButton("Speed Dump", self)
+        # self.polygonRadio3.clicked.connect(self.radioButtonClicked)
 
-        self.objectRadio1 = QRadioButton("Arrow", self)
-        self.objectRadio1.clicked.connect(self.radioButtonClicked)
+        # self.objectRadio1 = QRadioButton("Arrow", self)
+        # self.objectRadio1.clicked.connect(self.radioButtonClicked)
 
-        self.objectRadio2 = QRadioButton("Diamond", self)
-        self.objectRadio2.clicked.connect(self.radioButtonClicked)
+        # self.objectRadio2 = QRadioButton("Diamond", self)
+        # self.objectRadio2.clicked.connect(self.radioButtonClicked)
 
-        self.objectRadio3 = QRadioButton("Road Sign", self)
-        self.objectRadio3.clicked.connect(self.radioButtonClicked)
+        # self.objectRadio3 = QRadioButton("Road Sign", self)
+        # self.objectRadio3.clicked.connect(self.radioButtonClicked)
 
-        self.pointRadio1 = QRadioButton("Vanishing Point", self)
-        self.pointRadio1.clicked.connect(self.radioButtonClicked)
+        # self.pointRadio1 = QRadioButton("Vanishing Point", self)
+        # self.pointRadio1.clicked.connect(self.radioButtonClicked)
 
         addLaneButton = QPushButton("Add Label")
-        addLaneButton.clicked.connect(self.addNewLine)
+        addLaneButton.clicked.connect(self.draw_lane_curve)
 
         delLaneButton = QPushButton("Delete Last Label")
-        delLaneButton.clicked.connect(self.delLastLine)
+        delLaneButton.clicked.connect(self.delete_last_label)
 
-        addPointButton = QPushButton("Add Point")
-        addPointButton.clicked.connect(self.addNewPoint)
+        # addPointButton = QPushButton("Add Point")
+        # addPointButton.clicked.connect(self.addNewPoint)
 
         delPointButton = QPushButton("Del Point")
-        delPointButton.clicked.connect(self.delLastPoint)
+        delPointButton.clicked.connect(self.delete_last_point)
 
-        loadPLButton = QPushButton("Load Previous Labels")
-        loadPLButton.clicked.connect(self.loadPrevLabel)
+        # loadPLButton = QPushButton("Load Previous Labels")
+        # loadPLButton.clicked.connect(self.loadPrevLabel)
 
         curPosButton = QPushButton("Show current Labels")
         curPosButton.clicked.connect(self.showPosition)
@@ -214,24 +191,24 @@ class Window(QWidget):
         lineGrouplayout.addWidget(self.lineRadio2)
         lineGrouplayout.addWidget(self.lineRadio3)
 
-        polygonGrouplayout = QVBoxLayout()
-        polygonGroupBox.setLayout(polygonGrouplayout)
-        polygonGrouplayout.addWidget(self.polygonRadio1)
-        polygonGrouplayout.addWidget(self.polygonRadio2)
-        polygonGrouplayout.addWidget(self.polygonRadio3)
+        # polygonGrouplayout = QVBoxLayout()
+        # polygonGroupBox.setLayout(polygonGrouplayout)
+        # polygonGrouplayout.addWidget(self.polygonRadio1)
+        # polygonGrouplayout.addWidget(self.polygonRadio2)
+        # polygonGrouplayout.addWidget(self.polygonRadio3)
 
-        objectGrouplayout = QVBoxLayout()
-        objectGroupBox.setLayout(objectGrouplayout)
-        objectGrouplayout.addWidget(self.objectRadio1)
-        objectGrouplayout.addWidget(self.objectRadio2)
-        objectGrouplayout.addWidget(self.objectRadio3)
+        # objectGrouplayout = QVBoxLayout()
+        # objectGroupBox.setLayout(objectGrouplayout)
+        # objectGrouplayout.addWidget(self.objectRadio1)
+        # objectGrouplayout.addWidget(self.objectRadio2)
+        # objectGrouplayout.addWidget(self.objectRadio3)
 
-        pointGrouplayout = QVBoxLayout()
-        pointGroupBox.setLayout(pointGrouplayout)
-        pointGrouplayout.addWidget(self.pointRadio1)
+        # pointGrouplayout = QVBoxLayout()
+        # pointGroupBox.setLayout(pointGrouplayout)
+        # pointGrouplayout.addWidget(self.pointRadio1)
 
         addDelLayout = QHBoxLayout()
-        addDelLayout.addWidget(addPointButton)
+        # addDelLayout.addWidget(addPointButton)
         addDelLayout.addWidget(delPointButton)
 
         addLayout = QVBoxLayout()
@@ -239,9 +216,9 @@ class Window(QWidget):
         #addLayout.addWidget(addLaneListButton)
 
         addLayout.addWidget(lineGroupBox)
-        addLayout.addWidget(polygonGroupBox)
-        addLayout.addWidget(objectGroupBox)
-        addLayout.addWidget(pointGroupBox)
+        # addLayout.addWidget(polygonGroupBox)
+        # addLayout.addWidget(objectGroupBox)
+        # addLayout.addWidget(pointGroupBox)
 
         addLayout.addWidget(addLaneButton)
         addLayout.addWidget(delLaneButton)
@@ -250,16 +227,31 @@ class Window(QWidget):
         rightLayout = QVBoxLayout()
         rightLayout.addLayout(addLayout)
         rightLayout.addSpacing(20)
-        rightLayout.addWidget(loadPLButton)
+        # rightLayout.addWidget(loadPLButton)
         rightLayout.addSpacing(20)
         rightLayout.addWidget(curPosButton)
         rightLayout.addWidget(self.editBox)
         rightLayout.addSpacing(20)
         rightLayout.addSpacerItem(verticalSpacer)
         rightLayout.addLayout(saveLayout)
-
+        
+        # LiDAR widget
+        # self.vtk_actor = vtk.vtkActor()
+        self.vtkWidget = QVTKRenderWindowInteractor(self)
+        self.vtkRenderer = vtk.vtkRenderer()
+        self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
+        self.addPointCloudToVTK()
+        # 2) 예를 들어 두 점 사이를 잇는 선
+        line_pts = [(0,0,0), (1,1,0), (2,1,1)]
+        self.addPolyLine(line_pts, color=(1,0,0), width=3)
+        
+        pcdWidget = QWidget()
+        pcdWidget.setLayout(QVBoxLayout())
+        pcdWidget.layout().addWidget(self.vtkWidget)
+        
         layout = QHBoxLayout()
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.canvas, 3)
+        layout.addWidget(pcdWidget, 2)
         layout.addLayout(rightLayout)
         self.setLayout(layout)
 
@@ -289,7 +281,144 @@ class Window(QWidget):
         layout.addLayout(lowerLayout)
         self.setLayout(layout)
         """
+        
+        # 점 저장용 리스트
+        self.lane_points = []
+        # 곡선별 점 인덱스 범위 저장 ([(start_idx, end_idx), ...])
+        self.lane_labels = []
+        # 점/곡선 아티스트 저장
+        self.lane_point_artists = []  # scatter 반환값들 (Add Label 전 점)
+        self.lane_curve_artists = []  # plot 반환값들
+        self.all_point_artists = []   # 전체 점 아티스트 (곡선 생성 후에도 유지)
 
+        # mouse event filter 연결 (FigureCanvas 위젯에)
+        # self.mouse_filter = QtMouseEventFilter()
+        # self.canvas.installEventFilter(self.mouse_filter)
+        # self.mouse_filter.clicked.connect(self.on_canvas_click)
+
+        # __init__ 안에 추가
+        self.canvas.mpl_connect('button_press_event', self.on_mpl_click)
+
+    def addPointCloudToVTK(self, index=None):
+        if index is None:
+            index = self.imgIndex if self.imgIndex >= 0 else 0
+        img_file = self.list_img_path[index]
+        pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+        pcd_path = os.path.join(self.pcd_dir, pcd_file)
+        if not os.path.exists(pcd_path):
+            print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+            return
+        pcd = o3d.t.io.read_point_cloud(pcd_path)
+        np_points = pcd.point.positions.numpy()
+        
+        vtk_points = vtk.vtkPoints()
+        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_colors.SetNumberOfComponents(3)
+        vtk_colors.SetName("Colors")
+        
+        # Normalize intensity to [0, 1]
+        np_colors = pcd.point.colors.numpy() 
+        
+        for pt, rgb in zip(np_points, np_colors):
+            vtk_points.InsertNextPoint(*pt)
+            vtk_colors.InsertNextTuple3(*rgb)
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+        polydata.GetPointData().SetScalars(vtk_colors)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetPointSize(2)
+
+        self.vtkRenderer.AddActor(actor)
+        self.vtkRenderer.ResetCamera()
+        
+        style = vtk.vtkInteractorStyleTrackballCamera()
+        style.SetMotionFactor(4)
+        self.vtkWidget.GetRenderWindow().GetInteractor().SetInteractorStyle(style)
+
+        self.vtkRenderer.GetActiveCamera().Zoom(1.2)
+        
+        self.vtkWidget.GetRenderWindow().Render()
+
+
+    def addPolyLine(self, line_points, color=(1,0,0), width=2):
+        """
+        line_points: [(x,y,z), …] 형태의 3D 좌표 리스트
+        color: RGB 튜플 (0~1)
+        width: 선 굵기 (픽셀)
+        """
+        # 1) vtkPoints 에 3D 점 삽입
+        vtk_pts = vtk.vtkPoints()
+        for i, (x,y,z) in enumerate(line_points):
+            vtk_pts.InsertNextPoint(x, y, z)
+
+        # 2) vtkPolyLine 으로 셀 구성
+        polyLine = vtk.vtkPolyLine()
+        polyLine.GetPointIds().SetNumberOfIds(len(line_points))
+        for i in range(len(line_points)):
+            polyLine.GetPointIds().SetId(i, i)
+
+        cells = vtk.vtkCellArray()
+        cells.InsertNextCell(polyLine)
+
+        # 3) vtkPolyData 에 점과 라인 정보 설정
+        lineData = vtk.vtkPolyData()
+        lineData.SetPoints(vtk_pts)
+        lineData.SetLines(cells)
+
+        # 4) Mapper & Actor 생성
+        lineMapper = vtk.vtkPolyDataMapper()
+        lineMapper.SetInputData(lineData)
+
+        lineActor = vtk.vtkActor()
+        lineActor.SetMapper(lineMapper)
+        lineActor.GetProperty().SetColor(*color)
+        lineActor.GetProperty().SetLineWidth(width)
+
+        # 5) 렌더러에 추가
+        self.vtkRenderer.AddActor(lineActor)
+        # 카메라 리셋은 선택사항
+        # self.vtkRenderer.ResetCamera()
+
+    def updatePointCloud(self, pcd_root='000000.pcd', index=0):
+        pcd_file = self.list_img_path[index].replace(".jpg", ".pcd").replace(".png", ".pcd")
+        full_path = os.path.join(pcd_root, pcd_file)
+
+        if not os.path.exists(full_path):
+            print("PCD not found:", full_path)
+            return
+
+        pcd = o3d.io.read_point_cloud(full_path)
+        np_points = np.asarray(pcd.points)
+
+        vtk_points = vtk.vtkPoints()
+        for pt in np_points:
+            vtk_points.InsertNextPoint(pt[0], pt[1], pt[2])
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        self.vtk_actor.SetMapper(mapper)
+        self.vtk_renderer.ResetCamera()
+        self.vtkWidget.GetRenderWindow().Render()
+
+        
     def fastDraw(self, canvas):
         ''' for faster scene update '''
         self.canvas.setUpdatesEnabled(False)
@@ -310,20 +439,20 @@ class Window(QWidget):
             self.beforeRadioChecked = self.lineRadio2
         elif self.lineRadio3.isChecked():
             self.beforeRadioChecked = self.lineRadio3
-        elif self.polygonRadio1.isChecked():
-            self.beforeRadioChecked = self.polygonRadio1
-        elif self.polygonRadio2.isChecked():
-            self.beforeRadioChecked = self.polygonRadio2
-        elif self.polygonRadio3.isChecked():
-            self.beforeRadioChecked = self.polygonRadio3
-        elif self.objectRadio1.isChecked():
-            self.beforeRadioChecked = self.objectRadio1
-        elif self.objectRadio2.isChecked():
-            self.beforeRadioChecked = self.objectRadio2
-        elif self.objectRadio3.isChecked():
-            self.beforeRadioChecked = self.objectRadio3
-        elif self.pointRadio1.isChecked():
-            self.beforeRadioChecked = self.pointRadio1
+        # elif self.polygonRadio1.isChecked():
+        #     self.beforeRadioChecked = self.polygonRadio1
+        # elif self.polygonRadio2.isChecked():
+        #     self.beforeRadioChecked = self.polygonRadio2
+        # elif self.polygonRadio3.isChecked():
+        #     self.beforeRadioChecked = self.polygonRadio3
+        # elif self.objectRadio1.isChecked():
+        #     self.beforeRadioChecked = self.objectRadio1
+        # elif self.objectRadio2.isChecked():
+        #     self.beforeRadioChecked = self.objectRadio2
+        # elif self.objectRadio3.isChecked():
+        #     self.beforeRadioChecked = self.objectRadio3
+        # elif self.pointRadio1.isChecked():
+        #     self.beforeRadioChecked = self.pointRadio1
         else:
             print("outofrange at radiobutton")
 
@@ -372,10 +501,18 @@ class Window(QWidget):
                 path = img_path + '/' + self.list_img_path[self.imgIndex].replace('\\', '/')
 
                 # TODO: written for test
-                img = mpimg.imread(path)
-                #img = mpimg.imread("data\\0001.jpg")
+                img = cv2.imread(path)
+                if img is None:
+                    print(f"이미지 {path}를 불러올 수 없습니다.")
+                    return
 
-                height, width, channels = img.shape
+                # distortion 보정
+                img_undistorted = cv2.undistort(img, self.k, self.distortion)
+
+                # matplotlib 등에서 RGB로 쓰려면 변환
+                img_undistorted = cv2.cvtColor(img_undistorted, cv2.COLOR_BGR2RGB)
+
+                height, width, channels = img_undistorted.shape
                 #width = int(width / 2)
                 #height = int(height / 2)
                 #self.resize(width,height)
@@ -383,9 +520,9 @@ class Window(QWidget):
                 #self.showMaximized()
 
                 if isFirst:
-                    self.pyt = self.axes.imshow(img)
+                    self.pyt = self.axes.imshow(img_undistorted)
                 else:
-                    self.pyt.set_data(img)
+                    self.pyt.set_data(img_undistorted)
 
                 # initial (x,y) position in image range
                 global x1,y1,x2,y2,x3,y3,x4,y4
@@ -469,48 +606,13 @@ class Window(QWidget):
         self.list_points.append(dr)
 
     def loadImg(self, directory):
-        ''' store img name to list dict '''
-
         try:
-            foldernames = []
-            for folder in os.listdir(directory):
-                if os.path.isdir(os.path.join(directory, folder)):
-                        foldernames.append(folder)
-            print("folders in data\n", foldernames)
-
-            print("\nfiles in data")
-            filenames = []
-            for folder in foldernames:
-                for file in os.listdir(os.path.join(directory, folder)):
-                    if not os.path.isdir(os.path.join(directory, folder, file)):
-                        if file.endswith(".jpg") or file.endswith(".png"):
-                            print(os.path.join(folder, file))
-                            self.list_img_path.append(os.path.join(folder, file))
-                        elif file.endswith(".txt"):
-                            pass
-                        else:
-                            sys.exit("Filename not end with .jpg or .png or .txt")
-                    else:
-                        sys.exit("No such images")
-
+            self.list_img_path = []
+            for file in os.listdir(os.path.join(directory, 'image')):
+                if file.endswith('.jpg') or file.endswith('.png'):
+                    print(file)
+                    self.list_img_path.append(os.path.join('image', file))
             print("\ntotal", len(self.list_img_path), "files loaded\n")
-
-            """
-            img_directory = "/data/train/1492635012549702766/12.jpg"
-
-            if not img_directory:
-                sys.exit("No such images to be founded!")
-
-            self.list_img_path.append(img_directory)
-            """
-            """
-            for filename in sorted(img_directory, key=lambda x:int(x[:-4])):
-                if filename.endswith(".jpg") or filename.endswith(".png"):
-                    self.list_img_path.append(filename)
-                else:
-                    sys.exit("Filename not end with .jpg or .png")
-            """
-
         except Exception as e:
             sys.exit(str(e))
 
@@ -589,17 +691,17 @@ class Window(QWidget):
         elif self.beforeRadioChecked == self.objectRadio1:
             lineColor = 'palevioletred'
             self.list_points_type.append('Arrow')
-            self.plotDraggableObject(lineColor)
+            self.plotDraggableObject(lineColor, verts, codes)
             select = 7
         elif self.beforeRadioChecked == self.objectRadio2:
             lineColor = 'yellow'
             self.list_points_type.append('Diamond')
-            self.plotDraggableObject(lineColor)
+            self.plotDraggableObject(lineColor, verts, codes)
             select = 8
         elif self.beforeRadioChecked == self.objectRadio3:
             lineColor = 'limegreen'
             self.list_points_type.append('RoadSign')
-            self.plotDraggableObject(lineColor)
+            self.plotDraggableObject(lineColor, verts, codes)
             select = 9
         elif self.beforeRadioChecked == self.pointRadio1:
             select = 10
@@ -613,8 +715,6 @@ class Window(QWidget):
             self.butconnect()
             # for faster scene update
             self.canvas.setUpdatesEnabled(True)
-
-
 
 
     def delLastLine(self):
@@ -885,16 +985,16 @@ class Window(QWidget):
 
         #self.savePng(f1,f2)
 
-    def loadPrevLabel(self):
-        ''' load previous labels '''
-        ind = self.imgIndex
-        if self.imgIndex == len(self.list_img_path):
-            ind = ind - 1
+    # def loadPrevLabel(self):
+    #     ''' load previous labels '''
+    #     ind = self.imgIndex
+    #     if self.imgIndex == len(self.list_img_path):
+    #         ind = ind - 1
 
-        if self.imgIndex == -1:
-            ind = ind + 1
+    #     if self.imgIndex == -1:
+    #         ind = ind + 1
 
-        status = self.isLabelExist(self.img_path, ind-1)
+    #     status = self.isLabelExist(self.img_path, ind-1)
 
     def msgBoxEvent(self):
         msgBox = QMessageBox()
@@ -1103,7 +1203,7 @@ class Window(QWidget):
 
     def UI(self,path):
         self.label = QLabel(self)
-        self.pixmap = QPixmap(os.getcwd()+"/data/0001.jpg")
+        self.pixmap = QPixmap(os.getcwd()+"000000.jpg")
         self.label.setPixmap(self.pixmap)
         self.resize(self.pixmap.width(),self.pixmap.height())
         self.label.mousePressEvent = self.getPos
@@ -1114,9 +1214,209 @@ class Window(QWidget):
         y = event.pos().y()
         print('Click',(x,y))
 
+    def on_canvas_click(self, x, y, button):
+        if button != Qt.LeftButton:
+            return
+        # 픽셀 좌표(x, y) → figure 좌표 (0~1)
+        width, height = self.canvas.get_width_height()
+        x_fig = x / width
+        y_fig = y / height
+
+        # figure 좌표 → axes 좌표 (데이터 좌표)
+        # matplotlib은 (0,0)이 왼쪽 아래, Qt는 (0,0)이 왼쪽 위이므로 y축 뒤집기 필요
+        y_fig = 1 - y_fig
+
+        # axes.transAxes는 (0,0)~(1,1) → 데이터 좌표 변환
+        xdata, ydata = self.axes.transAxes.transform((x_fig, y_fig))
+        xdata, ydata = self.axes.transData.inverted().transform((xdata, ydata))
+
+        self.lane_points.append((xdata, ydata))
+        self.axes.plot(xdata, ydata, 'o', color='blue')
+        self.canvas.draw()
+
+    def draw_lane_curve(self):
+        if len(self.lane_points) < 2:
+            return
+        xs, ys = centripetal_catmull_rom(self.lane_points)
+        if self.beforeRadioChecked == self.lineRadio1:  # Yellow Line
+            color = 'yellow'
+            linestyle = '-'
+        elif self.beforeRadioChecked == self.lineRadio2:  # White Line
+            color = '#ff69b4'  # 핫핑크
+            linestyle = '-'
+        elif self.beforeRadioChecked == self.lineRadio3:  # White Dash Line
+            color = '#ff69b4'  # 핫핑크
+            linestyle = '--'
+        else:
+            color = 'limegreen'
+            linestyle = '-'
+        curve_artist, = self.axes.plot(xs, ys, linestyle, color=color)
+        self.lane_curve_artists.append(curve_artist)
+        # 곡선 생성에 사용된 점들의 인덱스 기록
+        n = len(self.lane_points)
+        if self.lane_labels:
+            last_end = self.lane_labels[-1][1]
+        else:
+            last_end = 0
+        self.lane_labels.append((last_end, last_end + n))
+        used_points = self.lane_points.copy()  # 복사!
+        # 점 리스트/아티스트 초기화
+        self.lane_points = []
+        self.lane_point_artists = []
+        self.canvas.draw()
+ 
+        lane_polyline_img_coords = [(int(x), int(y)) for x, y in zip(xs, ys)]
+
+        rgb_image = self.pyt.get_array() if hasattr(self, 'pyt') else None
+        if rgb_image is None:
+            print("이미지 배열을 찾을 수 없습니다.")
+            return
+            
+        img_file = self.list_img_path[self.imgIndex]
+        pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+        pcd_path = os.path.join(self.pcd_dir, pcd_file)
+        if not os.path.exists(pcd_path):
+            print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+            return
+        pcd = o3d.t.io.read_point_cloud(pcd_path)
+        np_points = pcd.point.positions.numpy()
+
+        lane_points_3d = lane_points_3d_from_pcd_and_lane(
+            rgb_image,
+            np_points,
+            self.k,
+            self.r,
+            self.t,
+            lane_polyline_img_coords,
+            lane_thickness=10
+        )
+        # points_in_camera_homo 계산
+        if lane_points_3d.shape[0] == 4:
+            points_3d = lane_points_3d[:3, :].T
+        else:
+            points_3d = lane_points_3d.T
+
+        # points_3d_vtk = np.stack([points_3d[:, 2], points_3d[:, 1], points_3d[:, 0]], axis=1)
+        self.addLanePointsToVTK(points_3d, color=(1,0,0), size=5)
+
+
+    def on_mpl_click(self, event):
+        if event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        self.lane_points.append((event.xdata, event.ydata))
+        if self.beforeRadioChecked == self.lineRadio1:  # Yellow Line
+            edgecolor = 'yellow'
+        elif self.beforeRadioChecked == self.lineRadio2 or self.beforeRadioChecked == self.lineRadio3:  # White/White Dash
+            edgecolor = '#ff69b4'
+        else:
+            edgecolor = 'blue'
+        artist = self.axes.scatter(
+            event.xdata, event.ydata,
+            s=60,
+            facecolors='white',
+            edgecolors=edgecolor,
+            linewidths=2
+        )
+        self.lane_point_artists.append(artist)
+        self.all_point_artists.append(artist)
+        self.canvas.draw()
+
+    def delete_last_label(self):
+        # 가장 최근 곡선과 해당 점들 삭제
+        if not self.lane_labels or not self.lane_curve_artists:
+            return
+        # 곡선 삭제
+        last_curve = self.lane_curve_artists.pop()
+        last_curve.remove()
+        # 점 삭제
+        start, end = self.lane_labels.pop()
+        try:
+            # all_point_artists에서 해당 점 아티스트 remove 및 리스트에서 삭제
+            for i in range(end-1, start-1, -1):
+                artist = self.all_point_artists.pop(i)
+                artist.remove()
+        except Exception as e:
+            print(f"[Delete Last Label] Error: {e}")
+        self.canvas.draw()
+
+    def delete_last_point(self):
+        # Add Label(곡선) 생성 전, 가장 최근 점 하나만 삭제
+        if not self.lane_point_artists or not self.lane_points:
+            return
+        last_artist = self.lane_point_artists.pop()
+        last_artist.remove()
+        self.lane_points.pop()
+        self.canvas.draw()
+
+    def addLanePointsToVTK(self, points, color=(1,0,0), size=8):
+        """
+        points: (N, 3) numpy array
+        color: RGB tuple (0~1)
+        size: point size
+        """
+        if points is None or len(points) == 0:
+            print("lane_points_3d가 비어 있습니다.")
+            return
+        vtk_points = vtk.vtkPoints()
+        for pt in points:
+            vtk_points.InsertNextPoint(*pt)
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+
+        # 색상 지정
+        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_colors.SetNumberOfComponents(3)
+        vtk_colors.SetName("Colors")
+        rgb = [int(c*255) for c in color]
+        for _ in range(points.shape[0]):
+            vtk_colors.InsertNextTuple3(*rgb)
+        polydata.GetPointData().SetScalars(vtk_colors)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetPointSize(size)
+
+        self.vtkRenderer.AddActor(actor)
+        self.vtkWidget.GetRenderWindow().Render()
+
 
 def genWindow(path):
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')  # 또는 'Windows', 'WindowsVista', 'Mac', ...
+    
+    qss = """
+    QWidget {
+        background-color: #232629;
+        color: #f0f0f0;
+        font-weight: bold;
+    }
+    QPushButton {
+        background-color: #ff69b4;
+        color: black;
+        border-radius: 5px;
+        padding: 5px;
+        font-weight: bold;
+    }
+    QPushButton:hover {
+        background-color: #ff69b4;
+    }
+    QPushButton:pressed {
+        background-color: #c2185b;
+        color: white;
+    }
+    """
+    app.setStyleSheet(qss)
+    
     window = Window(path)
     window.showMaximized()
     window.show()
