@@ -31,7 +31,7 @@ from marker import DraggablePoint
 from updater import DelayedUpdater
 from mouse_event import QtMouseEventFilter
 from polynomial import centripetal_catmull_rom
-from calibration import load_calibration_params, lane_points_3d_from_pcd_and_lane, lidar_points_in_image
+from converter import load_calibration_params, lane_points_3d_from_pcd_and_lane, lidar_points_in_image, sample_lane_points
 
 # set initial 4 points
 x1=800
@@ -114,16 +114,18 @@ class Window(QWidget):
         # objectGroupBox = QGroupBox("Object", self)
         # pointGroupBox = QGroupBox("Point", self)
 
-        self.lineRadio1 = QRadioButton("Yellow Line", self)
-        self.lineRadio1.setChecked(True)
-        self.beforeRadioChecked = self.lineRadio1
-        self.lineRadio1.clicked.connect(self.radioButtonClicked)
+        
 
         self.lineRadio2 = QRadioButton("White Line", self)
+        self.lineRadio2.setChecked(True)
+        self.beforeRadioChecked = self.lineRadio2
         self.lineRadio2.clicked.connect(self.radioButtonClicked)
 
         self.lineRadio3 = QRadioButton("White Dash Line", self)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
+
+        self.lineRadio1 = QRadioButton("Yellow Line", self)
+        self.lineRadio1.clicked.connect(self.radioButtonClicked)
 
         # self.polygonRadio1 = QRadioButton("Crosswalk", self)
         # self.polygonRadio1.clicked.connect(self.radioButtonClicked)
@@ -482,6 +484,18 @@ class Window(QWidget):
                 isPlot = self.msgBoxEvent()
         """
 
+
+        if hasattr(self, 'lane_curve_artists'):
+            for curve in self.lane_curve_artists:
+                curve.remove()
+            self.lane_curve_artists.clear()
+
+        # 점 아티스트도 함께 제거 (선택 사항)
+        if hasattr(self, 'all_point_artists'):
+            for pt in self.all_point_artists:
+                pt.remove()
+            self.all_point_artists.clear()
+                
         if isPlot:
             # increase img index
             if action == 0 and self.imgIndex < len(self.list_img_path):
@@ -1306,8 +1320,9 @@ class Window(QWidget):
         else:
             points_3d = lane_points_3d.T
 
+        sampled_pts = sample_lane_points(points_3d.T, num_samples=20)
 
-        self.addLanePointsToVTK(points_3d, color=(1,0,0), size=3)
+        self.addLanePointsToVTK(sampled_pts, color=(1,0,0), size=5)
 
     def on_mpl_click(self, event):
         if event.button != 1:
@@ -1333,7 +1348,6 @@ class Window(QWidget):
         self.canvas.draw()
 
     def delete_last_label(self):
-        # 가장 최근 곡선과 해당 점들 삭제
         if not self.lane_labels or not self.lane_curve_artists:
             return
         # 곡선 삭제
@@ -1348,6 +1362,13 @@ class Window(QWidget):
                 artist.remove()
         except Exception as e:
             print(f"[Delete Last Label] Error: {e}")
+
+        # VTK에서 마지막 레인 Actor 삭제
+        if hasattr(self, 'lane_vtk_actors') and self.lane_vtk_actors:
+            last_actor = self.lane_vtk_actors.pop()
+            self.vtkRenderer.RemoveActor(last_actor)
+            self.vtkWidget.GetRenderWindow().Render()
+
         self.canvas.draw()
 
     def delete_last_point(self):
@@ -1396,6 +1417,13 @@ class Window(QWidget):
         actor.GetProperty().SetPointSize(size)
 
         self.vtkRenderer.AddActor(actor)
+        self.vtkWidget.GetRenderWindow().Render()
+
+        # 생성된 레인 Actor 저장
+        if not hasattr(self, 'lane_vtk_actors'):
+            self.lane_vtk_actors = []
+        self.lane_vtk_actors.append(actor)
+
         self.vtkWidget.GetRenderWindow().Render()
 
 

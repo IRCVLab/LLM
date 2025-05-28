@@ -4,6 +4,29 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 import io
 
+
+def sample_lane_points(points_3d, num_samples=20):
+    points = points_3d.T  # shape: (N, 3)
+    if points.shape[0] <= num_samples:
+        return points
+
+    dists = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cumdist = np.insert(np.cumsum(dists), 0, 0)
+    target_dists = np.linspace(0, cumdist[-1], num_samples)
+
+    sampled = []
+    j = 0
+    for td in target_dists:
+        while j < len(cumdist)-1 and cumdist[j+1] < td:
+            j += 1
+        if j >= len(points)-1:
+            break
+        ratio = (td - cumdist[j]) / (cumdist[j+1] - cumdist[j])
+        interpolated = points[j] + ratio * (points[j+1] - points[j])
+        sampled.append(interpolated)
+    return np.array(sampled)
+
+
 def load_calibration_params():
     k = np.load("./calibration/k.npy")
     r = np.load("./calibration/r.npy")
@@ -11,7 +34,7 @@ def load_calibration_params():
     distortion = np.load(f"./calibration/distortion.npy")
     return t, r, k, distortion
 
-def create_lane_mask(image_shape, lane_points, thickness=1):
+def create_lane_mask(image_shape, lane_points, thickness):
 
     mask = np.zeros(image_shape[:2], dtype=np.uint8)
     pts = np.array(lane_points, dtype=np.int32).reshape(-1, 1, 2)
@@ -37,7 +60,7 @@ def lane_points_3d_from_pcd_and_lane(
     r_lidar_to_camera_coordinate, 
     t_lidar_to_camera_coordinate, 
     lane_polyline_img_coords,
-    lane_thickness=1):
+    lane_thickness=0.1):
 
     t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000.0
     # keep points that are in front of LiDAR
