@@ -6,25 +6,32 @@ import io
 
 
 def sample_lane_points(points_3d, num_samples=20):
-    points = points_3d.T  # shape: (N, 3)
-    if points.shape[0] <= num_samples:
+    points = points_3d.T
+    if points.shape[0] < num_samples:
         return points
 
     dists = np.linalg.norm(np.diff(points, axis=0), axis=1)
     cumdist = np.insert(np.cumsum(dists), 0, 0)
     target_dists = np.linspace(0, cumdist[-1], num_samples)
 
-    sampled = []
+    sampled_indices = []
     j = 0
     for td in target_dists:
         while j < len(cumdist)-1 and cumdist[j+1] < td:
             j += 1
-        if j >= len(points)-1:
+        if j >= len(points):
             break
-        ratio = (td - cumdist[j]) / (cumdist[j+1] - cumdist[j])
-        interpolated = points[j] + ratio * (points[j+1] - points[j])
-        sampled.append(interpolated)
-    return np.array(sampled)
+        sampled_indices.append(j)
+    
+    sampled_indices = list(dict.fromkeys(sampled_indices))
+    while len(sampled_indices) < num_samples and len(points) > 0:
+        sampled_indices.append(len(points) - 1)
+    
+    sampled_indices = sampled_indices[:num_samples]
+    
+    sampled = points[sampled_indices]
+    
+    return sampled
 
 
 def load_calibration_params():
@@ -60,20 +67,18 @@ def lane_points_3d_from_pcd_and_lane(
     r_lidar_to_camera_coordinate, 
     t_lidar_to_camera_coordinate, 
     lane_polyline_img_coords,
-    lane_thickness=0.1):
+    lane_thickness=5):
 
     t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000.0
-    # keep points that are in front of LiDAR
+
     points_in_front_of_lidar = []
     for point_i in point_cloud:
         if point_i[0] >= 0:
             points_in_front_of_lidar.append(point_i)
     point_cloud = np.array(points_in_front_of_lidar)
     
-    # image to camera coordinate system
     points_in_camera_coordinate = np.dot(r_lidar_to_camera_coordinate, point_cloud.T) + t_lidar_to_camera_coordinate
 
-    # project points form camera coordinate to image
     points_in_image = np.dot(k, points_in_camera_coordinate)
     points_in_image = points_in_image / points_in_image[2, :]
     points_in_image = points_in_image[0:2, :]
@@ -88,12 +93,8 @@ def lane_points_3d_from_pcd_and_lane(
 
     fused_points = np.array(fused_points)
 
-    # 이미지 크기의 빈 곳은 0, 레인 위는 1인 마스크 생성
     lane_mask = create_lane_mask(rgb_image.shape, lane_polyline_img_coords, thickness=lane_thickness)
-
-    # fused point 에서 마스킹에 포함된 index 추출
     lane_indices = filter_points_on_lane(fused_points, lane_mask)
-
     lane_points_3d = fused_points[lane_indices]
 
     points_in_image = lane_points_3d[:,:2]
@@ -105,8 +106,17 @@ def lane_points_3d_from_pcd_and_lane(
     points_in_camera_homo = np.linalg.inv(k) @ points_in_image_homo.T * s
     points_in_lidar_homo = np.linalg.inv(r_lidar_to_camera_coordinate) @ (points_in_camera_homo - t_lidar_to_camera_coordinate)
 
+    filtered_indices = []
+    for idx in range(points_in_lidar_homo.shape[1]):
+        x = points_in_lidar_homo[0, idx]
+        y = points_in_lidar_homo[1, idx]
+        if abs(x) > 1.0 and abs(y) > 1.0:
+            filtered_indices.append(idx)
+    
+    points_in_lidar_homo = points_in_lidar_homo[:, filtered_indices]
 
-    return points_in_lidar_homo
+    print(f"mapping된 point 개수: {len(points_in_lidar_homo[0])}")
+    return points_in_lidar_homo 
 
 
 
