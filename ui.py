@@ -18,6 +18,7 @@ import matplotlib.image as mpimg
 import numpy as np
 import cv2
 import random
+import json
 #from threading import Timer
 
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
@@ -49,6 +50,29 @@ y4=500
 class Window(QWidget):
     imgIndex = -1
     saveFlag = True
+    # Lane 색상 및 타입 매핑
+    LANE_COLORS = {
+        'Yellow': {
+            'mpl_color': 'red',
+            'vtk_color': (1.0, 0.0, 0.0),
+            'category': 'yellow_lane'
+        },
+        'White': {
+            'mpl_color': '#ff69b4',
+            'vtk_color': (1.0, 0.412, 0.706),
+            'category': 'white_lane'
+        },
+        'WhiteDash': {
+            'mpl_color': 'limegreen',
+            'vtk_color': (0.196, 0.804, 0.196),
+            'category': 'white_dash_lane'
+        },
+        'Default': {
+            'mpl_color': 'limegreen',
+            'vtk_color': (0.196, 0.804, 0.196),
+            'category': 'unknown'
+        }
+    }
 
     def __init__(self,path):
         super(Window,self).__init__()
@@ -73,6 +97,8 @@ class Window(QWidget):
         # To store the draggable polygon
         self.list_points = []
         self.list_points_type = []
+        self.sampled_pts = []
+        self.sampled_uv = []
 
         # calibration params
         self.t, self.r, self.k, self.distortion = load_calibration_params()
@@ -107,61 +133,63 @@ class Window(QWidget):
 
         addLaneListButton = QComboBox()
         addLaneListButton.addItems(["---Select line type---","White line", "White dash line", "Yellow line"])
-        addLaneListButton.activated.connect(self.addNewLine)
 
         lineGroupBox = QGroupBox("Line", self)
-        # polygonGroupBox = QGroupBox("Polygon", self)
-        # objectGroupBox = QGroupBox("Object", self)
-        # pointGroupBox = QGroupBox("Point", self)
 
-        
 
-        self.lineRadio2 = QRadioButton("White Line", self)
-        self.lineRadio2.setChecked(True)
-        self.beforeRadioChecked = self.lineRadio2
-        self.lineRadio2.clicked.connect(self.radioButtonClicked)
+        # 라디오 버튼 스타일 시트
+        radio_style = """
+            QRadioButton {
+                spacing: 10px;
+                font-weight: bold;
+                min-height: 30px;
+            }
+            QRadioButton::indicator {
+                width: 15px;
+                height: 15px;
+                border-radius: 10px;
+            }
+            QRadioButton::indicator::unchecked {
+                background-color: #cccccc;
+                border: 2px solid #666666;
+            }
+            QRadioButton::indicator::checked {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+                border: 2px solid qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+            }
+            QRadioButton::indicator::unchecked:hover {
+                background-color: #ff69b4;
+            }
+            QRadioButton::indicator::checked:hover {
+                background-color: #ff69b4;
+            }
+        """
 
-        self.lineRadio3 = QRadioButton("White Dash Line", self)
-        self.lineRadio3.clicked.connect(self.radioButtonClicked)
-
+        # Yellow Line 라디오 버튼
         self.lineRadio1 = QRadioButton("Yellow Line", self)
+        self.lineRadio1.setStyleSheet(radio_style)
+        self.lineRadio1.setChecked(True)
+        self.beforeRadioChecked = self.lineRadio1
         self.lineRadio1.clicked.connect(self.radioButtonClicked)
 
-        # self.polygonRadio1 = QRadioButton("Crosswalk", self)
-        # self.polygonRadio1.clicked.connect(self.radioButtonClicked)
+        # White Line 라디오 버튼
+        self.lineRadio2 = QRadioButton("White Line", self)
+        self.lineRadio2.setStyleSheet(radio_style)
+        self.lineRadio2.clicked.connect(self.radioButtonClicked)
 
-        # self.polygonRadio2 = QRadioButton("Stop Line", self)
-        # self.polygonRadio2.clicked.connect(self.radioButtonClicked)
-
-        # self.polygonRadio3 = QRadioButton("Speed Dump", self)
-        # self.polygonRadio3.clicked.connect(self.radioButtonClicked)
-
-        # self.objectRadio1 = QRadioButton("Arrow", self)
-        # self.objectRadio1.clicked.connect(self.radioButtonClicked)
-
-        # self.objectRadio2 = QRadioButton("Diamond", self)
-        # self.objectRadio2.clicked.connect(self.radioButtonClicked)
-
-        # self.objectRadio3 = QRadioButton("Road Sign", self)
-        # self.objectRadio3.clicked.connect(self.radioButtonClicked)
-
-        # self.pointRadio1 = QRadioButton("Vanishing Point", self)
-        # self.pointRadio1.clicked.connect(self.radioButtonClicked)
+        # White Dash Line 라디오 버튼
+        self.lineRadio3 = QRadioButton("White Dash Line", self)
+        self.lineRadio3.setStyleSheet(radio_style)
+        self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
         addLaneButton = QPushButton("Add Label")
         addLaneButton.clicked.connect(self.draw_lane_curve)
 
-        delLaneButton = QPushButton("Delete Last Label")
+        delLaneButton = QPushButton("Delete Label")
         delLaneButton.clicked.connect(self.delete_last_label)
 
-        # addPointButton = QPushButton("Add Point")
-        # addPointButton.clicked.connect(self.addNewPoint)
-
-        delPointButton = QPushButton("Del Point")
+        delPointButton = QPushButton("Delete Point")
         delPointButton.clicked.connect(self.delete_last_point)
-
-        # loadPLButton = QPushButton("Load Previous Labels")
-        # loadPLButton.clicked.connect(self.loadPrevLabel)
 
         curPosButton = QPushButton("Show current Labels")
         curPosButton.clicked.connect(self.showPosition)
@@ -169,11 +197,11 @@ class Window(QWidget):
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
 
         nextImgButton = QPushButton("Next Image")
-        #nextImgButton.clicked.connect(lambda: self.plotBackGround(self.img_path,0))
+
         nextImgButton.clicked.connect(self.loadNextImage)
 
         preImgButton = QPushButton("Prev Image")
-        #preImgButton.clicked.connect(lambda: self.plotBackGround(self.img_path,1))
+
         preImgButton.clicked.connect(self.loadPrevImage)
 
         saveButton = QPushButton("Save")
@@ -202,34 +230,12 @@ class Window(QWidget):
         lineGrouplayout.addWidget(self.lineRadio2)
         lineGrouplayout.addWidget(self.lineRadio3)
 
-        # polygonGrouplayout = QVBoxLayout()
-        # polygonGroupBox.setLayout(polygonGrouplayout)
-        # polygonGrouplayout.addWidget(self.polygonRadio1)
-        # polygonGrouplayout.addWidget(self.polygonRadio2)
-        # polygonGrouplayout.addWidget(self.polygonRadio3)
-
-        # objectGrouplayout = QVBoxLayout()
-        # objectGroupBox.setLayout(objectGrouplayout)
-        # objectGrouplayout.addWidget(self.objectRadio1)
-        # objectGrouplayout.addWidget(self.objectRadio2)
-        # objectGrouplayout.addWidget(self.objectRadio3)
-
-        # pointGrouplayout = QVBoxLayout()
-        # pointGroupBox.setLayout(pointGrouplayout)
-        # pointGrouplayout.addWidget(self.pointRadio1)
-
         addDelLayout = QHBoxLayout()
-        # addDelLayout.addWidget(addPointButton)
         addDelLayout.addWidget(delPointButton)
 
         addLayout = QVBoxLayout()
         addLayout.addWidget(addLaneLabel)
-        #addLayout.addWidget(addLaneListButton)
-
         addLayout.addWidget(lineGroupBox)
-        # addLayout.addWidget(polygonGroupBox)
-        # addLayout.addWidget(objectGroupBox)
-        # addLayout.addWidget(pointGroupBox)
 
         addLayout.addWidget(addLaneButton)
         addLayout.addWidget(delLaneButton)
@@ -238,7 +244,6 @@ class Window(QWidget):
         rightLayout = QVBoxLayout()
         rightLayout.addLayout(addLayout)
         rightLayout.addSpacing(20)
-        # rightLayout.addWidget(loadPLButton)
         rightLayout.addSpacing(20)
         rightLayout.addWidget(curPosButton)
         rightLayout.addWidget(self.editBox)
@@ -265,26 +270,6 @@ class Window(QWidget):
         #t = Timer(1.0, self.loadFirstLabel)
         #t.start()
 
-
-        """
-        upperLayout = QVBoxLayout()
-        upperLayout.addWidget(nextImgButton)
-        upperLayout.addWidget(preImgButton)
-        upperLayout.addWidget(curPosButton)
-        upperLayout.addWidget(addLaneButton)
-
-        lowerLayout = QVBoxLayout()
-        lowerLayout.addWidget(delLaneButton)
-        lowerLayout.addWidget(saveButton)
-
-        # set the layout
-        layout = QHBoxLayout()
-        layout.addWidget(self.canvas)
-        layout.addLayout(upperLayout)
-        layout.addLayout(lowerLayout)
-        self.setLayout(layout)
-        """
-        
         # 점 저장용 리스트
         self.lane_points = []
         # 곡선별 점 인덱스 범위 저장 ([(start_idx, end_idx), ...])
@@ -293,11 +278,6 @@ class Window(QWidget):
         self.lane_point_artists = []  # scatter 반환값들 (Add Label 전 점)
         self.lane_curve_artists = []  # plot 반환값들
         self.all_point_artists = []   # 전체 점 아티스트 (곡선 생성 후에도 유지)
-
-        # mouse event filter 연결 (FigureCanvas 위젯에)
-        # self.mouse_filter = QtMouseEventFilter()
-        # self.canvas.installEventFilter(self.mouse_filter)
-        # self.mouse_filter.clicked.connect(self.on_canvas_click)
 
         # __init__ 안에 추가
         self.canvas.mpl_connect('button_press_event', self.on_mpl_click)
@@ -359,83 +339,6 @@ class Window(QWidget):
         self.vtkWidget.GetRenderWindow().Render()
 
 
-    def addPolyLine(self, line_points, color=(1,0,0), width=2):
-        """
-        line_points: [(x,y,z), …] 형태의 3D 좌표 리스트
-        color: RGB 튜플 (0~1)
-        width: 선 굵기 (픽셀)
-        """
-        # 1) vtkPoints 에 3D 점 삽입
-        vtk_pts = vtk.vtkPoints()
-        for i, (x,y,z) in enumerate(line_points):
-            vtk_pts.InsertNextPoint(x, y, z)
-
-        # 2) vtkPolyLine 으로 셀 구성
-        polyLine = vtk.vtkPolyLine()
-        polyLine.GetPointIds().SetNumberOfIds(len(line_points))
-        for i in range(len(line_points)):
-            polyLine.GetPointIds().SetId(i, i)
-
-        cells = vtk.vtkCellArray()
-        cells.InsertNextCell(polyLine)
-
-        # 3) vtkPolyData 에 점과 라인 정보 설정
-        lineData = vtk.vtkPolyData()
-        lineData.SetPoints(vtk_pts)
-        lineData.SetLines(cells)
-
-        # 4) Mapper & Actor 생성
-        lineMapper = vtk.vtkPolyDataMapper()
-        lineMapper.SetInputData(lineData)
-
-        lineActor = vtk.vtkActor()
-        lineActor.SetMapper(lineMapper)
-        lineActor.GetProperty().SetColor(*color)
-        lineActor.GetProperty().SetLineWidth(width)
-
-        # 5) 렌더러에 추가
-        self.vtkRenderer.AddActor(lineActor)
-        # 카메라 리셋은 선택사항
-        # self.vtkRenderer.ResetCamera()
-
-    def updatePointCloud(self, pcd_root='000000.pcd', index=0):
-        pcd_file = self.list_img_path[index].replace(".jpg", ".pcd").replace(".png", ".pcd")
-        full_path = os.path.join(pcd_root, pcd_file)
-
-        if not os.path.exists(full_path):
-            print("PCD not found:", full_path)
-            return
-
-        pcd = o3d.io.read_point_cloud(full_path)
-        np_points = np.asarray(pcd.points)
-
-        vtk_points = vtk.vtkPoints()
-        for pt in np_points:
-            vtk_points.InsertNextPoint(pt[0], pt[1], pt[2])
-
-        polydata = vtk.vtkPolyData()
-        polydata.SetPoints(vtk_points)
-
-        vertex_filter = vtk.vtkVertexGlyphFilter()
-        vertex_filter.SetInputData(polydata)
-        vertex_filter.Update()
-
-        mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(vertex_filter.GetOutput())
-
-        self.vtk_actor.SetMapper(mapper)
-        self.vtk_renderer.ResetCamera()
-        self.vtkWidget.GetRenderWindow().Render()
-
-        
-    def fastDraw(self, canvas):
-        ''' for faster scene update '''
-        self.canvas.setUpdatesEnabled(False)
-        canvas.draw()
-        self.canvas.setUpdatesEnabled(True)
-
-    def loadFirstLabel(self):
-        self.isLabelExist(self.img_path, self.imgIndex)
 
     def radioButtonClicked(self):
         self.beforeRadioChecked.setAutoExclusive(False)
@@ -448,20 +351,6 @@ class Window(QWidget):
             self.beforeRadioChecked = self.lineRadio2
         elif self.lineRadio3.isChecked():
             self.beforeRadioChecked = self.lineRadio3
-        # elif self.polygonRadio1.isChecked():
-        #     self.beforeRadioChecked = self.polygonRadio1
-        # elif self.polygonRadio2.isChecked():
-        #     self.beforeRadioChecked = self.polygonRadio2
-        # elif self.polygonRadio3.isChecked():
-        #     self.beforeRadioChecked = self.polygonRadio3
-        # elif self.objectRadio1.isChecked():
-        #     self.beforeRadioChecked = self.objectRadio1
-        # elif self.objectRadio2.isChecked():
-        #     self.beforeRadioChecked = self.objectRadio2
-        # elif self.objectRadio3.isChecked():
-        #     self.beforeRadioChecked = self.objectRadio3
-        # elif self.pointRadio1.isChecked():
-        #     self.beforeRadioChecked = self.pointRadio1
         else:
             print("outofrange at radiobutton")
 
@@ -534,11 +423,6 @@ class Window(QWidget):
                 img_undistorted = cv2.cvtColor(img_undistorted, cv2.COLOR_BGR2RGB)
 
                 height, width, channels = img_undistorted.shape
-                #width = int(width / 2)
-                #height = int(height / 2)
-                #self.resize(width,height)
-                #self.showFullScreen()
-                #self.showMaximized()
 
                 if isFirst:
                     self.pyt = self.axes.imshow(img_undistorted)
@@ -555,18 +439,6 @@ class Window(QWidget):
                 # Divide into six equal segments
                 x1,x2,x3,x4 = x_range*(4.0/6), x_range*(3.0/6), x_range*(2.0/6), x_range*(1.0/6)
                 y1,y2,y3,y4 = y_range*(1.0/6), y_range*(2.0/6), y_range*(3.0/6), y_range*(4.0/6)
-
-                # Produce an height*width black basemap
-                #self.basemap = np.zeros([height,width,1], dtype=np.uint8)
-
-                # If label text exist, draw previous output
-                # TODO: read from existing label=
-                if not isFirst:
-                    isLabel = self.isLabelExist(img_path,self.imgIndex)
-
-                #isLabel = True
-                #if not isLabel and not isFirst:
-                #    self.isLabelExist(img_path,self.imgIndex-1)
 
                 # Edit window title
                 self.setWindowTitle("IRCV: 3D Lane Labeling Tool")
@@ -587,46 +459,6 @@ class Window(QWidget):
         self.plotBackGround(self.img_path,1)
 
 
-    def plotDraggableLine(self, lineType, lineColor, verts=[], codes=[]):
-        ''' Plot and define the 2 draggable points of the baseline '''
-        if len(verts) == 0 or len(codes) == 0:
-            verts = [(x1/2+x2/2, y1/2+y2/2), (x3/2+x4/2, y3/2+y4/2),]
-            #codes = [Path.MOVETO,Path.CURVE4,Path.CURVE4,Path.CURVE4,]
-            codes = [Path.MOVETO, Path.LINETO, ]
-        path = Path(verts, codes)
-        patch = patches.PathPatch(path, facecolor='none', alpha=1, edgecolor=lineColor, lw=4, linestyle=lineType)
-
-        self.axes.add_patch(patch)
-
-        dr = DraggablePoint(patch, "line")
-        self.list_points.append(dr)
-
-    def plotDraggablePolygon(self, faceColor, verts=[], codes=[]):
-        ''' Plot and define the Polygon '''
-        if len(verts) == 0 or len(codes) == 0:
-            verts = [(x3, y3), (x3, y4), (x4, y4), (x4, y3), (x3, y3), ]
-            codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY, ]
-        path = Path(verts, codes)
-        patch = patches.PathPatch(path, facecolor=faceColor, alpha=0.5, linestyle='-', lw=0)
-
-        self.axes.add_patch(patch)
-
-        dr = DraggablePoint(patch, "polygon")
-        self.list_points.append(dr)
-
-    def plotDraggableObject(self, lineColor, verts=[], codes=[]):
-        ''' Plot and define the Polygon '''
-        if len(verts) == 0 or len(codes) == 0:
-            verts = [(x1, y1), (x1, y2), (x2, y2), (x2, y1), (x1, y1), ]
-            codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY, ]
-        path = Path(verts, codes)
-        patch = patches.PathPatch(path, facecolor='none', alpha=0.75, edgecolor=lineColor, lw=3, linestyle='-')
-
-        self.axes.add_patch(patch)
-
-        dr = DraggablePoint(patch, "object")
-        self.list_points.append(dr)
-
     def loadImg(self, directory):
         try:
             self.list_img_path = []
@@ -643,110 +475,14 @@ class Window(QWidget):
         text = "Current Labeled Lanes:\n\n"
         
         # 라인 정보 표시
-        for lineType, pts in zip(self.list_points_type, self.list_points):
-            pos = pts.get_position()
-            if len(pos) >= 2:  # 최소 2개의 점이 있어야 시작점과 끝점 표시 가능
-                start_point = pos[0]
-                end_point = pos[-1]
-                text += f"Class: {lineType}\n"
-                text += f"Start Point: ({start_point[0]:.2f}, {start_point[1]:.2f})\n"
-                text += f"End Point: ({end_point[0]:.2f}, {end_point[1]:.2f})\n"
-                text += "-" * 30 + "\n"
-
-        # 라인 개수 표시
-        text += f"\nTotal number of labeled lanes: {len(self.list_points)}\n"
+        if hasattr(self, 'sampled_uv') and self.sampled_uv is not None:
+            for i, lane_type in enumerate(self.list_points_type):
+                text += f"{i+1} Lane: {lane_type}\n"
+                text += f"\nTotal number of labeled lanes: {len(self.list_points_type)}\n"
 
         self.editBox.setPlainText(text)
 
 
-### 사용 xxxxxxxxxxxxxxxxxxxxX
-    def addNewLine(self,select):
-        ''' add a new line to figure '''
-        lineType = ''
-        lineColor = ''
-
-        if select == 1:
-            lineType = '-'
-            lineColor = 'c'
-            self.list_points_type.append('White')
-        elif select == 2:
-            lineType = '--'
-            lineColor = 'c'
-            self.list_points_type.append('WhiteDash')
-        elif select == 3:
-            lineType = '-'
-            lineColor = 'm'
-            self.list_points_type.append('Yellow')
-
-        if select != 0:
-            self.plotDraggableLine(lineType,lineColor)
-            self.butconnect()
-
-### 사용 xxxxxxxxxxxxxxxxxxxxX
-    def addNewLine(self):
-        ''' add a new line to figure '''
-
-        select = 0
-        if self.beforeRadioChecked == self.lineRadio1:
-            lineType = '-'
-            lineColor = 'orangered'
-            self.list_points_type.append('Yellow')
-            self.plotDraggableLine(lineType, lineColor)
-            select = 1
-        elif self.beforeRadioChecked == self.lineRadio2:
-            lineType = '-'
-            lineColor = '#ff69b4'
-            self.list_points_type.append('White')
-            self.plotDraggableLine(lineType, lineColor)
-            select = 2
-        elif self.beforeRadioChecked == self.lineRadio3:
-            lineType = '--'
-            lineColor = '#RED'
-            self.list_points_type.append('WhiteDash')
-            self.plotDraggableLine(lineType, lineColor)
-            select = 3
-        # elif self.beforeRadioChecked == self.polygonRadio1:
-        #     faceColor = 'mediumblue'
-        #     self.list_points_type.append('Crosswalk')
-        #     self.plotDraggablePolygon(faceColor)
-        #     select = 4
-        # elif self.beforeRadioChecked == self.polygonRadio2:
-        #     faceColor = 'blueviolet'
-        #     self.list_points_type.append('StopLine')
-        #     self.plotDraggablePolygon(faceColor)
-        #     select = 5
-        # elif self.beforeRadioChecked == self.polygonRadio3:
-        #     faceColor = 'saddlebrown'
-        #     self.list_points_type.append('SpeedDump')
-        #     self.plotDraggablePolygon(faceColor)
-        #     select = 6
-        # elif self.beforeRadioChecked == self.objectRadio1:
-        #     lineColor = 'palevioletred'
-        #     self.list_points_type.append('Arrow')
-        #     self.plotDraggableObject(lineColor, verts, codes)
-        #     select = 7
-        # elif self.beforeRadioChecked == self.objectRadio2:
-        #     lineColor = 'yellow'
-        #     self.list_points_type.append('Diamond')
-        #     self.plotDraggableObject(lineColor, verts, codes)
-        #     select = 8
-        # elif self.beforeRadioChecked == self.objectRadio3:
-        #     lineColor = 'limegreen'
-        #     self.list_points_type.append('RoadSign')
-        #     self.plotDraggableObject(lineColor, verts, codes)
-        #     select = 9
-        # elif self.beforeRadioChecked == self.pointRadio1:
-        #     select = 10
-        #     pass
-        else:
-            print("outofrange at addNewLine")
-
-        if select != 0:
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(False)
-            self.butconnect()
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(True)
 
 
     def delLastLine(self):
@@ -781,79 +517,6 @@ class Window(QWidget):
             if self.list_points_type:
                 self.list_points_type.pop()
         self.butconnect()
-
-    def addNewPoint(self):
-        ''' add a new line points to figure '''
-        if self.list_points_type[-1] in ['Yellow', 'White', 'WhiteDash']:
-            lineType = self.list_points_type[-1]
-            pts = self.list_points[-1]
-            pos = pts.get_position()
-            verts = [(256 + random.randrange(0,512), 256 + random.randrange(0,512))]
-            for index, (x, y) in enumerate(pos):
-                verts.append((x, y))
-            codes = [Path.MOVETO, ]
-            for i in range(len(pos)):
-                codes.append(Path.LINETO)
-
-            lineType = ''
-            lineColor = ''
-            
-            if self.list_points_type[-1] == 'Yellow':
-                lineType = '-'
-                lineColor = 'orangered'
-                self.list_points_type.append('Yellow')
-            elif self.list_points_type[-1] == 'White':
-                lineType = '-'
-                lineColor = '#ff69b4'
-                self.list_points_type.append('White')
-            elif self.list_points_type[-1] == 'WhiteDash':
-                lineType = '--'
-                lineColor = 'red'
-                self.list_points_type.append('WhiteDash')
-
-            self.delLastLine()
-            self.plotDraggableLine(lineType, lineColor, verts, codes)
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(False)
-            self.butconnect()
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(True)
-
-        elif self.list_points_type[-1] in ['Crosswalk', 'StopLine', 'SpeedDump']:
-            lineType = self.list_points_type[-1]
-            pts = self.list_points[-1]
-            pos = pts.get_position()
-            verts = []
-            for index, (x, y) in enumerate(pos):
-                verts.append((x, y))
-            verts.insert(1, (256 + random.randrange(0,512), 256 + random.randrange(0,512)))
-            codes = [Path.MOVETO, ]
-            for i in range(len(pos)-1):
-                codes.append(Path.LINETO)
-            codes.append(Path.CLOSEPOLY)
-
-            faceColor = ''
-
-            if self.list_points_type[-1] == 'Crosswalk':
-                faceColor = 'mediumblue'
-                self.list_points_type.append('Crosswalk')
-            elif self.list_points_type[-1] == 'StopLine':
-                faceColor = 'blueviolet'
-                self.list_points_type.append('StopLine')
-            elif self.list_points_type[-1] == 'SpeedDump':
-                faceColor = 'saddlebrown'
-                self.list_points_type.append('SpeedDump')
-
-            self.delLastLine()
-            self.plotDraggablePolygon(faceColor, verts, codes)
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(False)
-            self.butconnect()
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(True)
-
-        else:
-            print("Point Type Not Supported")
 
 
     def delLastPoint(self):
@@ -900,44 +563,6 @@ class Window(QWidget):
             # for faster scene update
             self.canvas.setUpdatesEnabled(True)
 
-        elif self.list_points_type[-1] in ['Crosswalk', 'StopLine', 'SpeedDump']:
-            lineType = self.list_points_type[-1]
-            pts = self.list_points[-1]
-            pos = pts.get_position()
-
-            if len(pos) <= 3:
-                self.delLastLine()
-                return
-
-            verts = []
-            for index, (x, y) in enumerate(pos):
-                verts.append((x, y))
-            verts.pop(1)
-            codes = [Path.MOVETO, ]
-            for i in range(len(pos) - 3):
-                codes.append(Path.LINETO)
-            codes.append(Path.CLOSEPOLY)
-
-            faceColor = ''
-
-            if self.list_points_type[-1] == 'Crosswalk':
-                faceColor = 'mediumblue'
-                self.list_points_type.append('Crosswalk')
-            elif self.list_points_type[-1] == 'StopLine':
-                faceColor = 'blueviolet'
-                self.list_points_type.append('StopLine')
-            elif self.list_points_type[-1] == 'SpeedDump':
-                faceColor = 'saddlebrown'
-                self.list_points_type.append('SpeedDump')
-
-            self.delLastLine()
-            self.plotDraggablePolygon(faceColor, verts, codes)
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(False)
-            self.butconnect()
-            # for faster scene update
-            self.canvas.setUpdatesEnabled(True)
-
         else:
             print("Point Type Not Supported")
 
@@ -955,53 +580,8 @@ class Window(QWidget):
         self.canvas.draw()
         #self.fastDraw(self.canvas)
 
-    def savePng(self,inputName,outputName):
-        ''' save current figure to png '''
-#        self.figure.savefig('test.png',bbox_inches='tight', pad_inches = 0)
-        # Produce an height*width black basemap
-        """
-        self.basemap = np.zeros([self.canvasSize[1],self.canvasSize[0],1], dtype=np.uint8)
-        with open(inputName+".txt", "r") as text_file:
-            text_line = [text_line.rstrip('\n') for text_line in text_file]
-
-        curvepoints = 20
-        thickness = 3
-        for item in text_line:
-            pos = item.split(',')
-            line_type, pos = pos[0],pos[1:]
-            nodes = self.bezierCurve(pos,curvepoints)
-            nodes = nodes.reshape((-1, 1, 2))
-
-            if line_type == 'White':
-                cv2.polylines(self.basemap, [nodes], False, (255, 0, 0), thickness)
-            elif line_type == 'WhiteDash':
-                cv2.polylines(self.basemap, [nodes], False, (200, 0, 0), thickness)
-            elif line_type == 'Yellow':
-                cv2.polylines(self.basemap, [nodes], False, (150, 0, 0), thickness)
-
-#            cv2.imshow('image',self.basemap)
-
-        cv2.imwrite(outputName, self.basemap)
-#        x = cv2.imread(outputName)
-#        print x[np.nonzero(x)]
-        """
-
-    def saveText(self,outputName):
-        ''' save line type and positions to txt '''
-        with open(outputName+".txt", "w") as text_file:
-            for lineType, pts in zip(self.list_points_type,self.list_points):
-                pos = pts.get_position()
-                text_file.write("%s " % lineType)
-                for index, (x,y) in enumerate(pos):
-                    text_file.write("%s %s" % (x, y))
-                    if index != len(pos)-1:
-                        text_file.write(" ")
-                text_file.write("\n")
-
-        self.saveFlag = True
-
-    def saveAll(self,img_path):
-        ''' save text and save png '''
+    def saveAll(self, img_path):
+        ''' Save lane data in the specified format '''
         ind = self.imgIndex
         if self.imgIndex == len(self.list_img_path):
             ind = ind - 1
@@ -1009,45 +589,62 @@ class Window(QWidget):
         if self.imgIndex == -1:
             ind = ind + 1
 
-        # f1 = img_path+"label_txt"+os.sep+self.list_img_path[ind][:-4]
-        # f2 = img_path+"label_png"+os.sep+self.list_img_path[ind][:-4]+".png"
-        # TODO: fix export png
-        f1 = img_path + os.sep + self.list_img_path[ind][:-4]
-        self.saveText(f1)
+        # Load calibration parameters
+        t, r, k, distortion = load_calibration_params()
+        
+        # Get current image path
+        img_file = self.list_img_path[ind]
+        file_path = os.path.join(img_path, 'image', img_file)
+        
+        # Prepare lane data
+        lane_data = []
+        if hasattr(self, 'sampled_pts') and self.sampled_pts is not None:
+            # Get lane type from UI selection
+            for i in range(len(self.sampled_pts)):
+                lane_type = self.list_points_type[i]
+                
+                # Convert lane type to category using LANE_COLORS
+                lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
+                category = lane_info['category']
+                
+                # Prepare lane points
+                # Convert points to row vectors
+                xyz = self.sampled_pts[i].T.tolist()  # [x1, x2, x3...], [y1, y2, y3...], [z1, z2, z3...]
+                uv = self.sampled_uv[i].T.tolist()    # [u1, u2, u3...], [v1, v2, v3...]
+                
+                # Create lane line data
+                lane_line = {
+                    "category": category,
+                    "visibility": [1.0] * len(self.sampled_pts[i]),  # All points are visible
+                    "uv": uv,
+                    "xyz": xyz
+                }
+                
+                lane_data.append(lane_line)
+        
+        # Create final data structure
+        data = {
+            "extrinsic": r.tolist(),  # Rotation matrix
+            "intrinsic": k.tolist(),  # Intrinsic matrix
+            "file_path": file_path,
+            "lane_lines": lane_data
+        }
+        
+        # Save to JSON file
+        output_file = os.path.splitext(img_file)[0] + '.json'
+        output_path = os.path.join(img_path, 'label', output_file)
+        
+        # Create label directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        try:
+            with open(output_path, 'w') as f:
+                json.dump(data, f, indent=4)
+            print(f"Saved lane data to {output_path}")
+        except Exception as e:
+            print(f"Error saving file: {e}")
 
-        #self.savePng(f1,f2)
 
-    # def loadPrevLabel(self):
-    #     ''' load previous labels '''
-    #     ind = self.imgIndex
-    #     if self.imgIndex == len(self.list_img_path):
-    #         ind = ind - 1
-
-    #     if self.imgIndex == -1:
-    #         ind = ind + 1
-
-    #     status = self.isLabelExist(self.img_path, ind-1)
-
-    def msgBoxEvent(self):
-        msgBox = QMessageBox()
-        msgBox.setIcon(QMessageBox.Warning)
-        msgBox.setWindowTitle('WARNING')
-        msgBox.setText( "Your changes have not been saved.\nAre you sure you want to discard the changes?" )
-        msgBox.setInformativeText( "Press OK to continue, or Cancel to stay on the current page." )
-        msgBox.addButton( QMessageBox.Ok )
-        msgBox.addButton( QMessageBox.Cancel )
-
-        msgBox.setDefaultButton( QMessageBox.Cancel )
-        ret = msgBox.exec_()
-
-        if ret == QMessageBox.Ok:
-            if self.imgIndex == len(self.list_img_path):
-                self.saveFlag = False
-            else:
-                self.saveFlag = True
-            return True
-        else:
-            return False
 
     def msgBoxReachEdgeEvent(self):
         msgBox = QMessageBox()
@@ -1102,190 +699,32 @@ class Window(QWidget):
         """
         return True
 
-    def isLabelExist(self,img_path,index):
-        fileName = img_path+os.sep+self.list_img_path[index][:-4]+".txt"
-        select = ''
-        try:
-            with open(fileName, 'r') as f:
-                x = f.read().splitlines()
-                # global x1,y1,x2,y2,x3,y3,x4,y4
-                # tmpx1, tmpy1, tmpx2, tmpy2, tmpx3, tmpy3, tmpx4, tmpy4 = x1,y1,x2,y2,x3,y3,x4,y4
-                for line in x:
-                    elemlist = line.split(' ')
-                    category = elemlist[0]
-                    points = elemlist[1:]
-
-                    verts = [(points[i*2], points[i*2+1]) for i in range(int(len(points)/2))]
-                    codes = []
-
-                    if category in ['Yellow', 'White', 'WhiteDash']:
-                        codes = [Path.MOVETO, ]
-                        for i in range(len(verts)-1):
-                            codes.append(Path.LINETO)
-                    elif category in ['Crosswalk', 'StopLine', 'SpeedDump']:
-                        codes = [Path.MOVETO, ]
-                        for i in range(len(verts) - 2):
-                            codes.append(Path.LINETO)
-                        codes.append(Path.CLOSEPOLY)
-                    elif category in ['Arrow', 'Diamond', 'RoadSign']:
-                        codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY, ]
-
-                    if category == 'Yellow':
-                        lineType = '-'
-                        lineColor = 'orangered'
-                        self.list_points_type.append('Yellow')
-                        self.plotDraggableLine(lineType, lineColor, verts, codes)
-                    elif category == 'White':
-                        lineType = '-'
-                        lineColor = '#ff69b4'
-                        self.list_points_type.append('White')
-                        self.plotDraggableLine(lineType, lineColor, verts, codes)
-                    elif category == 'WhiteDash':
-                        lineType = '--'
-                        lineColor = 'red'
-                        self.list_points_type.append('WhiteDash')
-                        self.plotDraggableLine(lineType, lineColor, verts, codes)
-                    elif category == 'Crosswalk':
-                        faceColor = 'mediumblue'
-                        self.list_points_type.append('Crosswalk')
-                        self.plotDraggablePolygon(faceColor, verts, codes)
-                    elif category == 'StopLine':
-                        faceColor = 'blueviolet'
-                        self.list_points_type.append('StopLine')
-                        self.plotDraggablePolygon(faceColor, verts, codes)
-                    elif category == 'SpeedDump':
-                        faceColor = 'saddlebrown'
-                        self.list_points_type.append('SpeedDump')
-                        self.plotDraggablePolygon(faceColor, verts, codes)
-                    elif category == 'Arrow':
-                        lineColor = 'palevioletred'
-                        self.list_points_type.append('Arrow')
-                        self.plotDraggableObject(lineColor, verts, codes)
-                    elif category == 'Diamond':
-                        lineColor = 'yellow'
-                        self.list_points_type.append('Diamond')
-                        self.plotDraggableObject(lineColor, verts, codes)
-                    elif category == 'RoadSign':
-                        lineColor = 'limegreen'
-                        self.list_points_type.append('RoadSign')
-                        self.plotDraggableObject(lineColor, verts, codes)
-                    else:
-                        pass
-
-                    #self.butconnect()
-
-                    # previous code\
-                    """
-                    select,xstr1,ystr1,xstr2,ystr2,xstr3,ystr3,xstr4,ystr4 = line.split(' ')
-                    x1,y1,x2,y2,x3,y3,x4,y4 = float(xstr1),float(ystr1),float(xstr2),float(ystr2),float(xstr3),float(ystr3),float(xstr4),float(ystr4)
-
-                    if select == 'White':
-                        lineType = 1
-                    elif select == 'WhiteDash':
-                        lineType = 2
-                    elif select == 'Yellow':
-                        lineType = 3
-
-                    self.addNewLine(lineType)
-                    """
-
-                self.butconnect()
-
-                #x1,y1,x2,y2,x3,y3,x4,y4 = tmpx1, tmpy1, tmpx2, tmpy2, tmpx3, tmpy3, tmpx4, tmpy4
-                self.saveFlag = True
-
-            return True
-        except IOError:
-#            print "Could not read file:", fileName
-            return False
-
-    def bezierCurve(self,pos,num=2):
-        ''' bezier Curve formula
-        X = (1-t)^3A + 3t(1-t)^2B + 3t^2(1-t)C + t^3D
-        '''
-        x1,y1,x2,y2,x3,y3,x4,y4 = pos
-        x1,y1,x2,y2,x3,y3,x4,y4 = float(x1),float(y1),float(x2),float(y2),float(x3),float(y3),float(x4),float(y4)
-        T_list = np.arange(0., 1+1./num, 1./num)
-
-        X = [ pow(1-t,3)*x1 + 3*t*pow(1-t,2)*x2 + 3*pow(t,2)*(1-t)*x3 + pow(t,3)*x4 for t in T_list]
-        Y = [ pow(1-t,3)*y1 + 3*t*pow(1-t,2)*y2 + 3*pow(t,2)*(1-t)*y3 + pow(t,3)*y4 for t in T_list]
-        return np.array(zip(X,Y),dtype=np.int32)
-
-    def closeEvent(self, event):
-        if self.imgIndex == len(self.list_img_path):
-            self.saveFlag = self.isPosNotChange(self.img_path,self.imgIndex-1)
-        else:
-            self.saveFlag = self.isPosNotChange(self.img_path,self.imgIndex)
-
-        if not self.saveFlag:
-            msgBox = QMessageBox()
-            msgBox.setIcon(QMessageBox.Warning)
-            msgBox.setWindowTitle('WARNING')
-            msgBox.setText( "Your changes have not been saved.\nAre you sure you want to discard the changes?" )
-            msgBox.setInformativeText( "Press OK to exit, or Cancel to stay on the current page." )
-            msgBox.setStandardButtons(QMessageBox.Cancel | QMessageBox.Ok);
-            msgBox.setDefaultButton(QMessageBox.Cancel);
-            if msgBox.exec_() == QMessageBox.Ok:
-                event.accept()
-            else:
-                event.ignore()
-
-    def onclick(self,event):
-        print('button=%d, x=%d, y=%d, xdata=%f, ydata=%f'%(event.button, event.x, event.y, event.xdata, event.ydata))
-
-    def UI(self,path):
-        self.label = QLabel(self)
-        self.pixmap = QPixmap(os.getcwd()+"000000.jpg")
-        self.label.setPixmap(self.pixmap)
-        self.resize(self.pixmap.width(),self.pixmap.height())
-        self.label.mousePressEvent = self.getPos
-        self.show()
-
-    def getPos(self,event):
-        x = event.pos().x()
-        y = event.pos().y()
-        print('Click',(x,y))
-
-    def on_canvas_click(self, x, y, button):
-        if button != Qt.LeftButton:
-            return
-        # 픽셀 좌표(x, y) → figure 좌표 (0~1)
-        width, height = self.canvas.get_width_height()
-        x_fig = x / width
-        y_fig = y / height
-
-        # figure 좌표 → axes 좌표 (데이터 좌표)
-        # matplotlib은 (0,0)이 왼쪽 아래, Qt는 (0,0)이 왼쪽 위이므로 y축 뒤집기 필요
-        y_fig = 1 - y_fig
-
-        # axes.transAxes는 (0,0)~(1,1) → 데이터 좌표 변환
-        xdata, ydata = self.axes.transAxes.transform((x_fig, y_fig))
-        xdata, ydata = self.axes.transData.inverted().transform((xdata, ydata))
-
-        self.lane_points.append((xdata, ydata))
-        self.axes.plot(xdata, ydata, 'o', color='blue')
-        self.canvas.draw()
 
     def draw_lane_curve(self):
         if len(self.lane_points) < 2:
             return
         xs, ys = centripetal_catmull_rom(self.lane_points)
+        lane_type = None
         if self.beforeRadioChecked == self.lineRadio1:  # Yellow Line
-            color = 'Red'
-            vtk_color = (1.0, 0.0, 0.0)  # Red
-            linestyle = '-'
+            lane_type = 'Yellow'
         elif self.beforeRadioChecked == self.lineRadio2:  # White Line
-            color = '#ff69b4'
-            vtk_color = (1.0, 0.412, 0.706)  # 핫핑크
-            linestyle = '-'
+            lane_type = 'White'
         elif self.beforeRadioChecked == self.lineRadio3:  # White Dash Line
-            color = '#ff69b4'  # 핫핑크
-            vtk_color = (1.0, 0.412, 0.706)  # 핫핑크
-            linestyle = '--'
+            lane_type = 'WhiteDash'
+        
+        if lane_type:
+            lane_info = self.LANE_COLORS[lane_type]
+            color = lane_info['mpl_color']
+            vtk_color = lane_info['vtk_color']
+            linestyle = '-' if lane_type != 'WhiteDash' else '--'
+            self.list_points_type.append(lane_type)
         else:
-            color = 'limegreen'
-            vtk_color = (0.196, 0.804, 0.196)
+            lane_info = self.LANE_COLORS['Default']
+            color = lane_info['mpl_color']
+            vtk_color = lane_info['vtk_color']
             linestyle = '-'
+            self.list_points_type.append('Unknown')
+        
         curve_artist, = self.axes.plot(xs, ys, linestyle, color=color)
         self.lane_curve_artists.append(curve_artist)
         # 곡선 생성에 사용된 점들의 인덱스 기록
@@ -1317,7 +756,7 @@ class Window(QWidget):
         pcd = o3d.t.io.read_point_cloud(pcd_path)
         np_points = pcd.point.positions.numpy()
 
-        lane_points_3d = lane_points_3d_from_pcd_and_lane(
+        lane_points_3d, points_2d = lane_points_3d_from_pcd_and_lane(
             rgb_image,
             np_points,
             self.k,
@@ -1332,22 +771,37 @@ class Window(QWidget):
         else:
             points_3d = lane_points_3d.T
 
-        sampled_pts = sample_lane_points(points_3d.T, num_samples=20)
-        print(f"sampled point 개수: {len(sampled_pts)}")
-        self.addLanePointsToVTK(sampled_pts, color=vtk_color, size=5)
-
+        # lane points 누적
+        new_sampled_pts, new_sampled_uv = sample_lane_points(points_3d.T, points_2d, num_samples=20)
+        print(f"새로운 sampled point 개수: {len(new_sampled_pts)}")
+        
+        # 각 lane별로 points와 uv를 저장
+        self.sampled_pts.append(new_sampled_pts)
+        self.sampled_uv.append(new_sampled_uv)
+        
+        # 모든 lane의 points와 uv를 합쳐서 VTK에 추가
+        all_points = np.vstack(self.sampled_pts)
+        all_uv = np.vstack(self.sampled_uv)
+        print(f"누적된 sampled point 총 개수: {len(all_points)}")
+        self.addLanePointsToVTK(new_sampled_pts, color=vtk_color, size=5)
+        
     def on_mpl_click(self, event):
         if event.button != 1:
             return
         if event.xdata is None or event.ydata is None:
             return
         self.lane_points.append((event.xdata, event.ydata))
+        lane_type = None
         if self.beforeRadioChecked == self.lineRadio1:  # Yellow Line
-            edgecolor = 'red'
-        elif self.beforeRadioChecked == self.lineRadio2 or self.beforeRadioChecked == self.lineRadio3:  # White/White Dash
-            edgecolor = '#ff69b4'
-        else:
-            edgecolor = 'blue'
+            lane_type = 'Yellow'
+        elif self.beforeRadioChecked == self.lineRadio2:  # White Line
+            lane_type = 'White'
+        elif self.beforeRadioChecked == self.lineRadio3:  # White Dash Line
+            lane_type = 'WhiteDash'
+        
+        lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
+        edgecolor = lane_info['mpl_color']
+        
         artist = self.axes.scatter(
             event.xdata, event.ydata,
             s=60,
