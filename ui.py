@@ -55,7 +55,7 @@ class Window(QWidget):
         'Yellow': {
             'mpl_color': 'red',
             'vtk_color': (1.0, 0.0, 0.0),
-            'category': 'white_lane'
+            'category': 'yellow_lane'
         },
         'White': {
             'mpl_color': '#ff69b4',
@@ -137,24 +137,58 @@ class Window(QWidget):
         lineGroupBox = QGroupBox("Line", self)
 
 
+        # 라디오 버튼 스타일 시트
+        radio_style = """
+            QRadioButton {
+                spacing: 10px;
+                font-weight: bold;
+                min-height: 30px;
+            }
+            QRadioButton::indicator {
+                width: 15px;
+                height: 15px;
+                border-radius: 10px;
+            }
+            QRadioButton::indicator::unchecked {
+                background-color: #cccccc;
+                border: 2px solid #666666;
+            }
+            QRadioButton::indicator::checked {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+                border: 2px solid qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+            }
+            QRadioButton::indicator::unchecked:hover {
+                background-color: #ff69b4;
+            }
+            QRadioButton::indicator::checked:hover {
+                background-color: #ff69b4;
+            }
+        """
+
+        # Yellow Line 라디오 버튼
+        self.lineRadio1 = QRadioButton("Yellow Line", self)
+        self.lineRadio1.setStyleSheet(radio_style)
+        self.lineRadio1.setChecked(True)
+        self.beforeRadioChecked = self.lineRadio1
+        self.lineRadio1.clicked.connect(self.radioButtonClicked)
+
+        # White Line 라디오 버튼
         self.lineRadio2 = QRadioButton("White Line", self)
-        self.lineRadio2.setChecked(True)
-        self.beforeRadioChecked = self.lineRadio2
+        self.lineRadio2.setStyleSheet(radio_style)
         self.lineRadio2.clicked.connect(self.radioButtonClicked)
 
+        # White Dash Line 라디오 버튼
         self.lineRadio3 = QRadioButton("White Dash Line", self)
+        self.lineRadio3.setStyleSheet(radio_style)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
-
-        self.lineRadio1 = QRadioButton("Yellow Line", self)
-        self.lineRadio1.clicked.connect(self.radioButtonClicked)
 
         addLaneButton = QPushButton("Add Label")
         addLaneButton.clicked.connect(self.draw_lane_curve)
 
-        delLaneButton = QPushButton("Delete Last Label")
+        delLaneButton = QPushButton("Delete Label")
         delLaneButton.clicked.connect(self.delete_last_label)
 
-        delPointButton = QPushButton("Del Point")
+        delPointButton = QPushButton("Delete Point")
         delPointButton.clicked.connect(self.delete_last_point)
 
         curPosButton = QPushButton("Show current Labels")
