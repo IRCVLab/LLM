@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import io
 
 
-def sample_lane_points(points_3d, num_samples=20):
+def sample_lane_points(points_3d, points_2d, num_samples=20):
     points = points_3d.T
     if points.shape[0] < num_samples:
-        return points
+        return points, points_2d
 
     dists = np.linalg.norm(np.diff(points, axis=0), axis=1)
     cumdist = np.insert(np.cumsum(dists), 0, 0)
@@ -29,9 +29,10 @@ def sample_lane_points(points_3d, num_samples=20):
     
     sampled_indices = sampled_indices[:num_samples]
     
-    sampled = points[sampled_indices]
+    sampled_3d = points[sampled_indices]
+    sampled_2d = points_2d[sampled_indices]
     
-    return sampled
+    return sampled_3d, sampled_2d
 
 
 def load_calibration_params():
@@ -84,7 +85,6 @@ def lane_points_3d_from_pcd_and_lane(
     points_in_image = points_in_image[0:2, :]
     points_in_image = points_in_image.T
 
-
     fused_points = []
 
     for i, point_img in enumerate(points_in_image):
@@ -114,9 +114,10 @@ def lane_points_3d_from_pcd_and_lane(
             filtered_indices.append(idx)
     
     points_in_lidar_homo = points_in_lidar_homo[:, filtered_indices]
+    points_in_image = points_in_image[filtered_indices]
 
     print(f"mapping된 point 개수: {len(points_in_lidar_homo[0])}")
-    return points_in_lidar_homo 
+    return points_in_lidar_homo, points_in_image 
 
 
 
