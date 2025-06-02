@@ -28,7 +28,6 @@ import matplotlib.cm as cm
 import matplotlib.colors as colors
 
 # Personnal modules
-from marker import DraggablePoint
 from updater import DelayedUpdater
 from mouse_event import QtMouseEventFilter
 from polynomial import centripetal_catmull_rom
@@ -478,7 +477,7 @@ class Window(QWidget):
         if hasattr(self, 'sampled_uv') and self.sampled_uv is not None:
             for i, lane_type in enumerate(self.list_points_type):
                 text += f"{i+1} Lane: {lane_type}\n"
-                text += f"\nTotal number of labeled lanes: {len(self.list_points_type)}\n"
+            text += f"\nTotal number of labeled lanes: {len(self.list_points_type)}\n"
 
         self.editBox.setPlainText(text)
 
