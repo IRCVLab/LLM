@@ -61,6 +61,45 @@ def filter_points_on_lane(points_in_image, lane_mask):
                 indices.append(i)
     return indices
 
+def filter_points_in_front(point_cloud):
+    points_in_front_of_lidar = []
+    for point_i in point_cloud:
+        if point_i[0] >= 0:
+            points_in_front_of_lidar.append(point_i)
+    
+    return np.array(points_in_front_of_lidar)
+
+def transform_to_camera(points_in_front, r, t):
+    return np.dot(r, points_in_front.T) + t
+
+def project_to_image(points_in_camera_coordinate, k):
+    points_in_image = np.dot(k, points_in_camera_coordinate)
+    points_in_image = points_in_image / points_in_image[2, :]
+    points_in_image = points_in_image[0:2, :]
+    points_in_image = points_in_image.T
+
+    return points_in_image
+
+def create_fused_points(points_in_image, points_in_camera_coordinate, rgb_image):
+    fused_points = []
+
+    for i, point_img in enumerate(points_in_image):
+        if (0 <= point_img[0] < rgb_image.shape[1]) and (0 <= point_img[1] < rgb_image.shape[0]):
+            fused_points.append((point_img[0], point_img[1], points_in_camera_coordinate[2, i]))
+
+    return np.array(fused_points)
+
+def convert_to_homogeneous(points):
+    homo = np.ones((points.shape[0], 1))
+    return np.concatenate([points, homo], axis=1)
+
+def convert_to_camera(points_homo, k, depth):
+    s = np.expand_dims(depth, axis=0)
+    return np.linalg.inv(k) @ points_homo.T * s
+
+def convert_to_lidar(points_camera, r, t):
+    return np.linalg.inv(r) @ (points_camera - t)
+
 def lane_points_3d_from_pcd_and_lane(
     rgb_image, 
     point_cloud, 
@@ -72,26 +111,17 @@ def lane_points_3d_from_pcd_and_lane(
 
     t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000.0
 
-    points_in_front_of_lidar = []
-    for point_i in point_cloud:
-        if point_i[0] >= 0:
-            points_in_front_of_lidar.append(point_i)
-    point_cloud = np.array(points_in_front_of_lidar)
+    # front points만 필터링
+    points_in_front = filter_points_in_front(point_cloud)
+
+    # 카메라 좌표계로 변환
+    points_in_camera_coordinate = transform_to_camera(points_in_front, r_lidar_to_camera_coordinate, t_lidar_to_camera_coordinate)
+
+    # 이미지 좌표로 프로젝션
+    points_in_image = project_to_image(points_in_camera_coordinate, k)
     
-    points_in_camera_coordinate = np.dot(r_lidar_to_camera_coordinate, point_cloud.T) + t_lidar_to_camera_coordinate
-
-    points_in_image = np.dot(k, points_in_camera_coordinate)
-    points_in_image = points_in_image / points_in_image[2, :]
-    points_in_image = points_in_image[0:2, :]
-    points_in_image = points_in_image.T
-
-    fused_points = []
-
-    for i, point_img in enumerate(points_in_image):
-        if (0 <= point_img[0] < rgb_image.shape[1]) and (0 <= point_img[1] < rgb_image.shape[0]):
-            fused_points.append((point_img[0], point_img[1], points_in_camera_coordinate[2, i]))
-
-    fused_points = np.array(fused_points)
+    # 이미지 범위 내의 점들만 필터링 + 반환 값은 (x, y, depth)
+    fused_points = create_fused_points(points_in_image, points_in_camera_coordinate, rgb_image)
 
     lane_mask = create_lane_mask(rgb_image.shape, lane_polyline_img_coords, thickness=lane_thickness)
     lane_indices = filter_points_on_lane(fused_points, lane_mask)
@@ -100,11 +130,13 @@ def lane_points_3d_from_pcd_and_lane(
     points_in_image = lane_points_3d[:,:2]
     depth_inside_image = lane_points_3d[:,2]
 
-    homo = np.ones((points_in_image.shape[0], 1))
-    points_in_image_homo = np.concatenate([points_in_image, homo], axis=1)
-    s = np.expand_dims(depth_inside_image, axis=0)
-    points_in_camera_homo = np.linalg.inv(k) @ points_in_image_homo.T * s
-    points_in_lidar_homo = np.linalg.inv(r_lidar_to_camera_coordinate) @ (points_in_camera_homo - t_lidar_to_camera_coordinate)
+    # 이미지 좌표를 homogeneous coordinate로 변환
+    points_in_image_homo = convert_to_homogeneous(points_in_image)
+    
+    # 깊이 정보를 사용하여 카메라 좌표계로 변환
+    points_in_camera_homo = convert_to_camera(points_in_image_homo, k, depth_inside_image)
+    # 카메라 좌표계를 LiDAR 좌표계로 변환
+    points_in_lidar_homo = convert_to_lidar(points_in_camera_homo, r_lidar_to_camera_coordinate, t_lidar_to_camera_coordinate)
 
     filtered_indices = []
     for idx in range(points_in_lidar_homo.shape[1]):
@@ -177,11 +209,3 @@ def lidar_points_in_image(
     points_in_lidar_homo = np.linalg.inv(r_lidar_to_camera_coordinate) @ (points_in_camera_homo - t_lidar_to_camera_coordinate)
 
     return points_in_lidar_homo
-    # fig = plt.figure()
-    # plt.imshow(rgb_image)
-    # plt.scatter(points_in_image[:, 0].tolist(), points_in_image[:, 1].tolist(), c=depth_inside_image, s=3)
-    # ax = plt.gca()
-    # ax.axes.xaxis.set_ticks([])
-    # ax.axes.yaxis.set_ticks([])
-    # img_lidar_points = get_img_from_fig(fig=fig, dpi=500)
-
