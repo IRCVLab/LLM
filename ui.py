@@ -30,7 +30,7 @@ import matplotlib.colors as colors
 # Personnal modules
 from utils.updater import DelayedUpdater
 from utils.polynomial import centripetal_catmull_rom
-from utils.converter import load_calibration_params, lane_points_3d_from_pcd_and_lane, lidar_points_in_image, sample_lane_points
+from utils.converter import load_calibration_params, projection_img_to_pcd, lidar_points_in_image, sample_lane_points
 
 # set initial 4 points
 x1=800
@@ -101,6 +101,7 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         self.list_points_type = []
         self.sampled_pts = []
         self.sampled_uv = []
+        self.vtk_lanes = []  # VTK 라벨 여러 개 저장
 
         # calibration params
         self.t, self.r, self.k, self.distortion = load_calibration_params()
@@ -127,11 +128,17 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
         self.addPointCloudToVTK()
 
+        # Connect VTK click event to handler
+        self.vtkWidget.GetRenderWindow().GetInteractor().AddObserver(
+            "LeftButtonPressEvent", self.on_vtk_click)
+
 
         self.plotBackGround(self.img_path,0,True)
 
         addLaneLabel = QLabel()
         addLaneLabel.setText("Label Setting")
+        
+        # 모드 선택기 삭제 - 통합 관리로 변경
 
         addLaneListButton = QComboBox()
         addLaneListButton.addItems(["---Select line type---","White line", "White dash line", "Yellow line"])
@@ -184,14 +191,14 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         self.lineRadio3.setStyleSheet(radio_style)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
-        addLaneButton = QPushButton("Add Label")
-        addLaneButton.clicked.connect(self.draw_lane_curve)
+        addLaneButton = QPushButton("Add Lane")
+        addLaneButton.clicked.connect(self.add_lane)
 
-        delLaneButton = QPushButton("Delete Label")
-        delLaneButton.clicked.connect(self.delete_last_label)
+        delLaneButton = QPushButton("Delete Lane")
+        delLaneButton.clicked.connect(self.delete_last_lane)
 
         delPointButton = QPushButton("Delete Point")
-        delPointButton.clicked.connect(self.delete_last_point)
+        delPointButton.clicked.connect(self.delete_point)
 
         curPosButton = QPushButton("Show current Labels")
         curPosButton.clicked.connect(self.showPosition)
