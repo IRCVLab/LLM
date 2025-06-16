@@ -335,31 +335,31 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
             print(f"키 입력 감지: {text} (key code: {key})")
             
             # 단축키 처리
-            if text == 'q':
+            if text == 'q' or text=='ㅂ':
                 self.select_yellow_line()
                 return True
-            elif text == 'w':
+            elif text == 'w' or text=='ㅈ':
                 self.select_white_line()
                 return True
-            elif text == 'e':
+            elif text == 'e' or text=='ㄷ':
                 self.select_white_dash_line()
                 return True
-            elif text == 'a':
+            elif text == 'a' or text=='ㅁ':
                 self.add_lane()
                 return True
-            elif text == 's':
+            elif text == 's' or text=='ㄴ':
                 self.delete_last_lane()
                 return True
-            elif text == 'd':
+            elif text == 'd' or text=='ㅇ':
                 self.delete_point()
                 return True
-            elif text == 'z':
+            elif text == 'z' or text=='ㅋ':
                 self.loadPrevImage()
                 return True
-            elif text == 'x':
+            elif text == 'x' or text=='ㅌ':
                 self.saveAll(self.img_path)
                 return True
-            elif text == 'c':
+            elif text == 'c' or text=='ㅊ':
                 self.loadNextImage()
                 return True
                 
