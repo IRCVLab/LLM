@@ -6,8 +6,9 @@ matplotlib.use("Qt5Agg")
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush
+from PyQt5.QtCore import QEvent  # 명시적으로 QEvent 추가
+from PyQt5.QtWidgets import QApplication, QShortcut
+from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush, QKeySequence
 
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -175,29 +176,29 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         """
 
         # Yellow Line 라디오 버튼
-        self.lineRadio1 = QRadioButton("Yellow Line", self)
+        self.lineRadio1 = QRadioButton("Yellow Line (q)", self)
         self.lineRadio1.setStyleSheet(radio_style)
         self.lineRadio1.setChecked(True)
         self.beforeRadioChecked = self.lineRadio1
         self.lineRadio1.clicked.connect(self.radioButtonClicked)
 
         # White Line 라디오 버튼
-        self.lineRadio2 = QRadioButton("White Line", self)
+        self.lineRadio2 = QRadioButton("White Line (w)", self)
         self.lineRadio2.setStyleSheet(radio_style)
         self.lineRadio2.clicked.connect(self.radioButtonClicked)
 
         # White Dash Line 라디오 버튼
-        self.lineRadio3 = QRadioButton("White Dash Line", self)
+        self.lineRadio3 = QRadioButton("White Dash Line (e)", self)
         self.lineRadio3.setStyleSheet(radio_style)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
-        addLaneButton = QPushButton("Add Lane")
+        addLaneButton = QPushButton("Add Lane (a)")
         addLaneButton.clicked.connect(self.add_lane)
 
-        delLaneButton = QPushButton("Delete Lane")
+        delLaneButton = QPushButton("Delete Lane (s)")
         delLaneButton.clicked.connect(self.delete_last_lane)
 
-        delPointButton = QPushButton("Delete Point")
+        delPointButton = QPushButton("Delete Point (d)")
         delPointButton.clicked.connect(self.delete_point)
 
         curPosButton = QPushButton("Show current Labels")
@@ -205,15 +206,15 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
 
-        nextImgButton = QPushButton("Next Image")
+        nextImgButton = QPushButton("Next Image (c)")
 
         nextImgButton.clicked.connect(self.loadNextImage)
 
-        preImgButton = QPushButton("Prev Image")
+        preImgButton = QPushButton("Prev Image (z)")
 
         preImgButton.clicked.connect(self.loadPrevImage)
 
-        saveButton = QPushButton("Save")
+        saveButton = QPushButton("Save (x)")
         saveButton.clicked.connect(lambda: self.saveAll(self.img_path))
 
         self.editBox = QPlainTextEdit()
@@ -290,7 +291,84 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
         # __init__ 안에 추가
         self.canvas.mpl_connect('button_press_event', self.on_mpl_click)
+        
+        # 키보드 단축키 설정 - 전체 어플리케이션에 적용
+        self.setFocusPolicy(Qt.StrongFocus)
+        
+        # 키보드 이벤트를 전체 어플리케이션에 적용
+        QApplication.instance().installEventFilter(self)
+        
 
+    # 단축키 함수들
+    def select_yellow_line(self):
+        self.lineRadio1.setChecked(True)
+        self.radioButtonClicked()
+        print("Yellow line 선택")
+    
+    def select_white_line(self):
+        self.lineRadio2.setChecked(True)
+        self.radioButtonClicked()
+        print("White line 선택")
+    
+    def select_white_dash_line(self):
+        self.lineRadio3.setChecked(True)
+        self.radioButtonClicked()
+        print("White dash line 선택")
+    
+    def eventFilter(self, obj, event):
+        """전체 어플리케이션에서 키보드 이벤트를 캡처
+        q: Yellow line button
+        w: white line button
+        e: white dash line button
+        a: add Lane button
+        s: delete Lane button
+        d: delete point button
+        z: prev image button
+        x: save button
+        c: next image button
+        """
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            text = event.text().lower()
+            
+            # 디버깅용 출력
+            print(f"키 입력 감지: {text} (key code: {key})")
+            
+            # 단축키 처리
+            if text == 'q':
+                self.select_yellow_line()
+                return True
+            elif text == 'w':
+                self.select_white_line()
+                return True
+            elif text == 'e':
+                self.select_white_dash_line()
+                return True
+            elif text == 'a':
+                self.add_lane()
+                return True
+            elif text == 's':
+                self.delete_last_lane()
+                return True
+            elif text == 'd':
+                self.delete_point()
+                return True
+            elif text == 'z':
+                self.loadPrevImage()
+                return True
+            elif text == 'x':
+                self.saveAll(self.img_path)
+                return True
+            elif text == 'c':
+                self.loadNextImage()
+                return True
+                
+        return super().eventFilter(obj, event)
+    
+    def keyPressEvent(self, event):
+        """기존 keyPressEvent 메서드는 유지하지만 이벤트 필터가 우선 처리함"""
+        # 이벤트 필터가 우선적으로 처리하도록 함
+        super().keyPressEvent(event)
 
 
     def plotBackGround(self,img_path,action,isFirst=False):
