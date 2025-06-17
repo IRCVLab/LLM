@@ -181,14 +181,15 @@ class LaneTools:
             # numpy 배열로 변환
             points_array = np.array(points_3d)
             
-            # VTK 포인트 추가
-            point_actors = []
-            # self.addLanePointsToVTK(points_array, color=vtk_color, size=7)
-            if hasattr(self, 'lane_vtk_actors') and self.lane_vtk_actors:
-                point_actors.append(self.lane_vtk_actors[-1])
-            lane_data['vtk_point_actors'] = point_actors
-            
-            # VTK 폴리라인 추가
+            # ----------- create two endpoint actors (start, end) -----------
+            prev_len = len(self.lane_vtk_actors) if hasattr(self,'lane_vtk_actors') else 0
+            for idx in (0, -1):
+                self.addLanePointsToVTK(points_array[idx], color=vtk_color, size=7, single_click=True)
+            if hasattr(self,'lane_vtk_actors'):
+                lane_data['vtk_point_actors'] = self.lane_vtk_actors[prev_len:]
+            else:
+                lane_data['vtk_point_actors'] = []
+            # ----------- VTK polyline 추가
             self.addLanePolylineToVTK(points=points_array, color=vtk_color, width=3)
             if hasattr(self, 'lane_vtk_polyline_actors') and self.lane_vtk_polyline_actors:
                 lane_data['vtk_actor'] = self.lane_vtk_polyline_actors[-1]

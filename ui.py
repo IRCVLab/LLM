@@ -330,10 +330,7 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         if event.type() == QEvent.KeyPress:
             key = event.key()
             text = event.text().lower()
-            
-            # 디버깅용 출력
-            print(f"키 입력 감지: {text} (key code: {key})")
-            
+                        
             # 단축키 처리
             if text == 'q' or text=='ㅂ':
                 self.select_yellow_line()
@@ -438,7 +435,7 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
                 # matplotlib 등에서 RGB로 쓰려면 변환
                 img_undistorted = cv2.cvtColor(img_undistorted, cv2.COLOR_BGR2RGB)
-
+                self.img = img_undistorted
                 height, width, channels = img_undistorted.shape
 
                 if isFirst:
