@@ -1,13 +1,17 @@
-import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtWidgets import QMessageBox
+
+
 import os 
 import vtk
 import json
-from utils.converter import load_calibration_params, projection_pcd_to_img, projection_img_to_pcd
-import matplotlib.pyplot as plt
+import numpy as np
 import open3d as o3d
+import matplotlib.pyplot as plt
+
+from utils.converter import load_calibration_params, projection_pcd_to_img, projection_img_to_pcd, interpolate_lane_curve
+
 class EventTools:
     """
     Mixin for event handling methods (mouse, keyboard, matplotlib, etc)
@@ -114,7 +118,7 @@ class EventTools:
             points_3d, _ = projection_img_to_pcd(
                 rgb_image, np_points, k, r, t, points_2d, single_click=True
             )
-            print(f"[on_mpl_click] shape: {points_3d.shape}")
+
             self.addLanePointsToVTK(points_3d, color=lane_info['vtk_color'], size=7, single_click=True)
             if not hasattr(self, 'vtk_lane_points'):
                 self.vtk_lane_points = []
@@ -226,7 +230,6 @@ class EventTools:
                     pts.Modified(); act.GetMapper().Update(); act.Modified()
                 act.SetPosition(0,0,0)
             lane['vtk_actor'].GetMapper().Update()
-            self.delete_vtk_point()
             
         except Exception as e:
             print('[release sync 2D→3D]', e)
@@ -252,6 +255,11 @@ class EventTools:
     ##################################################################################
 
     def on_vtk_click(self, obj, event):
+        # 클릭 위치 저장 (press)
+        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        self._vtk_press_pos = interactor.GetEventPosition()
+        self._vtk_point_added = False  # 실제 point 생성은 기존 코드에서 판단
+
         interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
         ctrl = interactor.GetControlKey()
         shift = interactor.GetShiftKey()
@@ -268,7 +276,6 @@ class EventTools:
             try:
                 pcd_file = self.list_pcd_path[self.imgIndex]
                 pcd_path = os.path.join(self.pcd_dir, pcd_file)
-                import open3d as o3d
                 pcd = o3d.t.io.read_point_cloud(pcd_path)
                 points_np = pcd.point.positions.numpy()
                 colors_np = pcd.point.colors.numpy() if "colors" in pcd.point else None
@@ -372,8 +379,21 @@ class EventTools:
             self.is_lane_completed = False
         except Exception as e:
             print(f"[on_vtk_click] error: {e}")
+        else:
+            self._vtk_point_added = True  # 정상적으로 point가 생성된 경우만 True
 
 
+
+
+    def on_vtk_release(self, obj, event):
+        # 드래그(시점 이동 등)로 판단되면 point 삭제
+        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        release_pos = interactor.GetEventPosition()
+        # 클릭/릴리즈 위치가 다르고, point가 추가된 경우만 삭제
+        if hasattr(self, '_vtk_press_pos') and self._vtk_point_added:
+            if self._vtk_press_pos != release_pos:
+                self.delete_vtk_point()
+                self._vtk_point_added = False
 
     def radioButtonClicked(self):
         self.beforeRadioChecked.setAutoExclusive(False)
@@ -649,87 +669,74 @@ class EventTools:
         t, r, k, distortion = load_calibration_params()
         
         # Get current image path
-        img_file = self.list_img_path[ind]
-        file_path = os.path.join(img_path, 'image', img_file)
+        # Save label JSON in ./data/label/<image_basename>.json
+        img_file = os.path.basename(self.list_img_path[ind])       # e.g. 000022.jpg
+        # Relative paths for dataset structure
+        image_rel_path = os.path.join("data", "image", img_file)   # e.g. data/image/000022.jpg
+        label_dir = os.path.join("data", "label")                  # ./data/label
+        os.makedirs(label_dir, exist_ok=True)
+        json_name = os.path.splitext(img_file)[0] + ".json"
+        label_json_path = os.path.join(label_dir, json_name)
         
         # Prepare lane data
         lane_data = []
         
         # 통합 레인 데이터 구조에서 저장
         if hasattr(self, 'unified_lanes') and self.unified_lanes:
-            for lane in self.unified_lanes:
+            num_samples = 20  # 등간격 샘플링 개수
+
+
+            for idx, lane in enumerate(self.unified_lanes):
                 lane_type = lane.get('type', 'Default')
-                
-                # Convert lane type to category using LANE_COLORS
                 lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
                 category = lane_info['category']
-                
-                # 3D 점 좌표 (VTK 점)
-                xyz = None
+
+                pts3d = None
+                # 1순위: points_3d 사용
                 if 'points_3d' in lane and lane['points_3d'] is not None:
-                    xyz = np.array(lane['points_3d']).T.tolist()
-                elif 'vtk_points' in lane and lane['vtk_points']:
-                    xyz = np.array(lane['vtk_points']).T.tolist()
-                
-                # 2D 점 좌표 (이미지 점)
-                uv = None
-                if 'points_2d' in lane and lane['points_2d'] is not None:
-                    uv = np.array(lane['points_2d']).T.tolist()
-                
-                # 둘 다 있는 경우만 저장
-                if xyz and uv:
-                    # Create lane line data
-                    lane_line = {
-                        "category": category,
-                        "visibility": [1.0] * len(xyz[0]),  # All points are visible
-                        "uv": uv,
-                        "xyz": xyz
-                    }
-                    lane_data.append(lane_line)
-        
-        # 기존 방식 (이전 버전 호환성)
-        elif hasattr(self, 'sampled_pts') and self.sampled_pts is not None:
-            # Get lane type from UI selection
-            for i in range(len(self.sampled_pts)):
-                lane_type = self.list_points_type[i]
-                
-                # Convert lane type to category using LANE_COLORS
-                lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
-                category = lane_info['category']
-                
-                # Prepare lane points
-                # Convert points to row vectors
-                xyz = self.sampled_pts[i].T.tolist()  # [x1, x2, x3...], [y1, y2, y3...], [z1, z2, z3...]
-                uv = self.sampled_uv[i].T.tolist()    # [u1, u2, u3...], [v1, v2, v3...]
-                
-                # Create lane line data
+                    pts3d = np.array(lane['points_3d'])
+                # 2순위: VTK actor에서 추출
+                elif 'vtk_actor' in lane and lane['vtk_actor'] is not None:
+                    actor = lane['vtk_actor']
+                    try:
+                        polydata = actor.GetMapper().GetInput()
+                        vtk_points = polydata.GetPoints()
+                        num_points = vtk_points.GetNumberOfPoints()
+                        pts3d = np.array([vtk_points.GetPoint(i) for i in range(num_points)])  # (N, 3)
+                        print(f"[saveAll] pts3d from vtk_actor: {pts3d}")
+                    except Exception as e:
+                        print(f"[saveAll] VTK actor 3D extraction error: {e}")
+                # 3순위: fallback - None
+
+                sampled_3d = interpolate_lane_curve(pts3d, num_samples=num_samples)
+                sampled_2d = projection_pcd_to_img(sampled_3d, k, r, t)
+
+
+                if sampled_2d.shape[0] < 2:
+                    continue
+
+                xyz = sampled_3d.T.tolist()  # (num_samples,3)→(3,N)
+                uv = sampled_2d.tolist()
                 lane_line = {
                     "category": category,
-                    "visibility": [1.0] * len(self.sampled_pts[i]),  # All points are visible
+                    "visibility": [1.0] * len(xyz[0]),
                     "uv": uv,
-                    "xyz": xyz
+                    "xyz": xyz,
+                    "track_id": idx + 1,
+                    "attribute": 0
                 }
-                
                 lane_data.append(lane_line)
-        
-        # Create final data structure
+
         data = {
             "extrinsic": r.tolist(),  # Rotation matrix
             "intrinsic": k.tolist(),  # Intrinsic matrix
-            "file_path": file_path,
+            "file_path": image_rel_path,
             "lane_lines": lane_data
         }
-        
-        # Save to JSON file
-        output_file = os.path.splitext(img_file)[0] + '.json'
-        output_path = os.path.join(img_path, 'label', output_file)
-        
-        # Create label directory if it doesn't exist
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
+
         try:
-            with open(output_path, 'w') as f:
+            with open(label_json_path, 'w') as f:
                 json.dump(data, f, indent=4)
-            print(f"Saved lane data to {output_path}")
+            print(f"Saved lane data to {label_json_path}")
         except Exception as e:
             print(f"Error saving file: {e}")

@@ -4,7 +4,46 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 import io
 
+from scipy.interpolate import interp1d
+from window_tools.viz import centripetal_catmull_rom
 
+def interpolate_lane_curve(points, num_samples=20):
+    """
+    points: (N,3) numpy array (클릭한 원본 점들)
+    num_samples: 샘플링할 곡선상의 점 개수
+    return: (num_samples, 3) numpy array (곡선 위의 등간격 점들)
+    """
+    points = np.asarray(points, dtype=float)
+    if points.shape[0] < 2:
+        return points
+    if points.shape[0] == 2:
+
+        return np.linspace(points[0], points[1], num_samples)
+
+
+    xs, ys = centripetal_catmull_rom(points[:, :2], num_samples=num_samples)
+
+    pts = points
+    deltas = np.diff(pts, axis=0)
+    dist_alpha = np.sqrt((deltas**2).sum(axis=1))**0.5
+    t_orig = [0.0]
+    for da in dist_alpha:
+        t_orig.append(t_orig[-1] + da)
+    t_orig = np.array(t_orig)
+    t_orig /= t_orig[-1]
+    t_lin = np.linspace(0, 1, num_samples)
+
+    t_orig_unique, unique_indices = np.unique(t_orig, return_index=True)
+    z_unique = points[:,2][unique_indices]
+    interp_kind = 'cubic' if len(t_orig_unique) > 3 else 'linear'
+    interp_z = interp1d(t_orig_unique, z_unique, kind=interp_kind)
+    zs = interp_z(t_lin)
+
+    curve_points = np.stack([xs, ys, zs], axis=1)
+    return curve_points
+
+
+### legacy ###
 def sample_lane_points(points_3d, points_2d, num_samples=20):
     points = points_3d.T
     if points.shape[0] < num_samples:
@@ -61,13 +100,16 @@ def filter_points_on_lane(points_in_image, lane_mask):
                 indices.append(i)
     return indices
 
-def filter_points_in_front(point_cloud):
-    points_in_front_of_lidar = []
-    for point_i in point_cloud:
-        if point_i[0] >= 0:
-            points_in_front_of_lidar.append(point_i)
+# def filter_points_in_front(point_cloud):
+#     points_in_front_of_lidar = []
+#     for point_i in point_cloud:
+#         if point_i[0] > 0:
+#             points_in_front_of_lidar.append(point_i)
     
-    return np.array(points_in_front_of_lidar)
+#     return np.array(points_in_front_of_lidar)
+
+def filter_points_in_front(pc, min_range=2.0):
+    return np.array([p for p in pc if (p[0] > 0 and np.linalg.norm(p) > min_range)])
 
 def transform_to_camera(points_in_front, r, t):
     return np.dot(r, points_in_front.T) + t
@@ -116,7 +158,6 @@ def point_masking(lane_polyline_img_coords, fused_points):
         closest_3d = fused_points[idx, :3]  # (3,) shape
         return closest_3d
 
-
 ########################
 # image to point cloud #
 ########################
@@ -138,12 +179,17 @@ def projection_img_to_pcd(
     # 카메라 좌표계로 변환
     points_in_camera_coordinate = transform_to_camera(points_in_front, r_lidar_to_camera_coordinate, t_lidar_to_camera_coordinate)
 
+    # 카메라 좌표계에서 z(depth) > 0.1m 인 점만 사용
+    cam_front_mask = points_in_camera_coordinate[2, :] > 0.1
+    points_in_camera_coordinate = points_in_camera_coordinate[:, cam_front_mask]
+    points_in_front = points_in_front[cam_front_mask]       # 이후 단계를 위해 동일 마스크 적용
+    
     # 이미지 좌표로 프로젝션
     points_in_image = project_to_image(points_in_camera_coordinate, k)
     
     # 이미지 범위 내의 점들만 필터링 + 반환 값은 (x, y, depth)
     fused_points = create_fused_points(points_in_image, points_in_camera_coordinate, rgb_image)
-
+    
     # 포인트 변환
     if single_click:
         lane_points_3d = point_masking(lane_polyline_img_coords, fused_points)

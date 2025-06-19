@@ -14,24 +14,16 @@ from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush, QKeySequenc
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.path import Path
-import matplotlib.patches as patches
-import matplotlib.image as mpimg
-import numpy as np
 import cv2
-import random
-import json
 #from threading import Timer
 
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtk
-import open3d as o3d
-import matplotlib.cm as cm
-import matplotlib.colors as colors
 
-# Personnal modules
+from window_tools.viz import VizTools
+from window_tools.event import EventTools
 from utils.updater import DelayedUpdater
-from utils.polynomial import centripetal_catmull_rom
-from utils.converter import load_calibration_params, projection_img_to_pcd, lidar_points_in_image, sample_lane_points
+from utils.converter import load_calibration_params
 
 # set initial 4 points
 x1=800
@@ -46,11 +38,8 @@ y3=300
 x4=200
 y4=500
 
-from window_tools.lane import LaneTools
-from window_tools.vtk import VTKTools
-from window_tools.event import EventTools
 
-class Window(QWidget, LaneTools, VTKTools, EventTools):
+class Window(QWidget, VizTools, EventTools):
     imgIndex = -1
     saveFlag = True
     # Lane 색상 및 타입 매핑
@@ -130,8 +119,9 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         self.addPointCloudToVTK()
 
         # Connect VTK click event to handler
-        self.vtkWidget.GetRenderWindow().GetInteractor().AddObserver(
-            "LeftButtonPressEvent", self.on_vtk_click)
+        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        interactor.AddObserver("LeftButtonPressEvent", self.on_vtk_click)
+        interactor.AddObserver("LeftButtonReleaseEvent", self.on_vtk_release)
 
 
         self.plotBackGround(self.img_path,0,True)
@@ -164,8 +154,8 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
                 border: 2px solid #666666;
             }
             QRadioButton::indicator::checked {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
-                border: 2px solid qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+                background-color: #c2185b;
+                border: 2px solid #888888;
             }
             QRadioButton::indicator::unchecked:hover {
                 background-color: #ff69b4;
@@ -303,17 +293,14 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
     def select_yellow_line(self):
         self.lineRadio1.setChecked(True)
         self.radioButtonClicked()
-        print("Yellow line 선택")
     
     def select_white_line(self):
         self.lineRadio2.setChecked(True)
         self.radioButtonClicked()
-        print("White line 선택")
     
     def select_white_dash_line(self):
         self.lineRadio3.setChecked(True)
         self.radioButtonClicked()
-        print("White dash line 선택")
     
     def eventFilter(self, obj, event):
         """전체 어플리케이션에서 키보드 이벤트를 캡처
@@ -369,6 +356,7 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
 
     def plotBackGround(self,img_path,action,isFirst=False):
+        self.unified_lanes = []  # 이미지 바뀔 때 레인 정보 초기화
         ''' Plot background method '''
         isPlot = True
         isEdge = False
@@ -387,14 +375,24 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
 
         if hasattr(self, 'lane_curve_artists'):
-            for curve in self.lane_curve_artists:
-                curve.remove()
+            # 안전하게 커브 아티스트 제거
+            for curve in list(self.lane_curve_artists):
+                try:
+                    curve.remove()
+                except ValueError:
+                    # 이미 제거된 경우 무시
+                    pass
             self.lane_curve_artists.clear()
 
         # 점 아티스트도 함께 제거 (선택 사항)
+        # 점 아티스트도 함께 제거 (선택 사항)
         if hasattr(self, 'all_point_artists'):
-            for pt in self.all_point_artists:
-                pt.remove()
+            for pt in list(self.all_point_artists):
+                try:
+                    pt.remove()
+                except ValueError:
+                    # 이미 제거된 경우 무시
+                    pass
             self.all_point_artists.clear()
                 
         if isPlot:
@@ -558,4 +556,3 @@ def genWindow(path):
     window.showMaximized()
     window.show()
     sys.exit(app.exec_())
-
