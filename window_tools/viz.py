@@ -1,47 +1,206 @@
 import os
+import vtk
 import numpy as np
 import open3d as o3d
-from PyQt5.QtWidgets import QMessageBox
-from utils.polynomial import centripetal_catmull_rom
-from utils.converter import load_calibration_params, projection_img_to_pcd, projection_pcd_to_img, sample_lane_points
-import vtk
 
-class LaneTools:
+from utils.polynomial import centripetal_catmull_rom
+from utils.converter import load_calibration_params, colorize_pcd_from_image,interpolate_lane_curve
+
+from scipy.interpolate import interp1d
+
+
+class VizTools:
+
+    def setTopDownView(self):
+        camera = self.vtkRenderer.GetActiveCamera()
+        camera.SetPosition(0, 0, 1000) 
+        # camera.SetFocalPoint(-50, 0, 0)
+        camera.SetViewUp(1, 0, 0)
+        self.vtkRenderer.ResetCameraClippingRange()
+
+    def addPointCloudToVTK(self, index=None, return_actor=False):
+        if index is None:
+            index = self.imgIndex if self.imgIndex >= 0 else 0
+        img_file = self.list_img_path[index]
+        pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+        pcd_path = os.path.join(self.pcd_dir, pcd_file)
+        if not os.path.exists(pcd_path):
+            print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+            return
+        pcd = o3d.t.io.read_point_cloud(pcd_path)
+        np_points = pcd.point.positions.numpy()
+        
+        vtk_points = vtk.vtkPoints()
+        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_colors.SetNumberOfComponents(3)
+        vtk_colors.SetName("Colors")
+        
+        # 색상이 있는 경우와 없는 경우 분기 처리
+        if "colors" in pcd.point:
+            np_colors = pcd.point.colors.numpy()
+            for pt, rgb in zip(np_points, np_colors):
+                vtk_points.InsertNextPoint(*pt)
+                vtk_colors.InsertNextTuple3(*rgb)
+        else:
+            # 색상이 없으면 회색으로 설정
+            gray_color = [128, 128, 128]
+            for pt in np_points:
+                vtk_points.InsertNextPoint(*pt)
+                vtk_colors.InsertNextTuple3(*gray_color)
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
+        polydata.GetPointData().SetScalars(vtk_colors)
+
+        vertex_filter = vtk.vtkVertexGlyphFilter()
+        vertex_filter.SetInputData(polydata)
+        vertex_filter.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(vertex_filter.GetOutput())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetPointSize(2)
+
+        self.vtkRenderer.AddActor(actor)
+        self.vtkRenderer.ResetCamera()
+        # self.setTopDownView()  # 탑다운 시점 고정
+        
+        style = vtk.vtkInteractorStyleTrackballCamera()
+        style.SetMotionFactor(4)
+        self.vtkWidget.GetRenderWindow().GetInteractor().SetInteractorStyle(style)
+
+        self.vtkRenderer.GetActiveCamera().Zoom(1.2)
+        
+        self.vtkWidget.GetRenderWindow().Render()
+        if return_actor:
+            return actor
+
+    def addColoredPointCloudToVTK(self, index=None, return_actor=False):
+        """
+        Adds a point cloud to the VTK renderer with colors from the current RGB image.
+        This projects the RGB image onto the point cloud.
+        """
+        try:
+            # Get current image and point cloud
+            img_file = self.list_img_path[self.imgIndex]
+            pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+            pcd_path = os.path.join(self.pcd_dir, pcd_file)
+            print(f"Loading PCD file for RGB colorization: {pcd_path}")
+            
+            # Load point cloud
+            pcd = o3d.t.io.read_point_cloud(pcd_path)
+            points_np = pcd.point.positions.numpy()
+            
+            # Mask NaN values
+            mask = ~np.isnan(points_np).any(axis=1)
+            points_np = points_np[mask]
+            
+            # Get RGB image
+            rgb_image = self.img if hasattr(self, 'img') else None
+            if rgb_image is None:
+                # Try loading image from disk directly
+                base_name = os.path.basename(img_file)
+                img_path_full = os.path.join(self.img_dir, base_name) if hasattr(self, 'img_dir') else None
+                print("[Colorize] trying image path:", img_path_full)
+                if img_path_full and os.path.exists(img_path_full):
+                    import cv2
+                    img = cv2.imread(img_path_full)
+                    if img is not None:
+                        if hasattr(self, 'k') and hasattr(self, 'distortion'):
+                            img = cv2.undistort(img, self.k, self.distortion)
+                        rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                if rgb_image is None:
+                    print("RGB image not available (even after disk read)")
+                    self.addPointCloudToVTK()
+                    return
+
+
+            # Robust check: skip rendering if any required data is missing
+            if rgb_image is None or points_np is None or points_np.size == 0 or self.k is None or self.r is None or self.t is None:
+                print("[WARNING] Skipping VTK colorization: missing data.")
+                print(f"  rgb_image: {type(rgb_image)}, shape: {getattr(rgb_image, 'shape', None)}")
+                print(f"  points_np: {type(points_np)}, shape: {getattr(points_np, 'shape', None)}, size: {getattr(points_np, 'size', None)}")
+                print(f"  k: {self.k}")
+                print(f"  r: {self.r}")
+                print(f"  t: {self.t}")
+                return
+
+            # Colorize the point cloud
+            vtk_points, vtk_colors, rgb_values = colorize_pcd_from_image(
+                points_np, rgb_image, self.k, self.r, self.t
+            )
+            
+            # Create VTK polydata
+            polydata = vtk.vtkPolyData()
+            polydata.SetPoints(vtk_points)
+            
+            # Create cells (vertices)
+            vertices = vtk.vtkCellArray()
+            for i in range(vtk_points.GetNumberOfPoints()):
+                vertices.InsertNextCell(1)
+                vertices.InsertCellPoint(i)
+            polydata.SetVerts(vertices)
+            
+            # Add color data
+            polydata.GetPointData().SetScalars(vtk_colors)
+            
+            # Create mapper and actor
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(polydata)
+            # Use RGB values directly, not through a lookup table
+            mapper.SetColorModeToDirectScalars()
+            mapper.SetScalarModeToUsePointData()
+            mapper.ScalarVisibilityOn()
+            print(f"[VTK] points:{vtk_points.GetNumberOfPoints()}  colors:{vtk_colors.GetNumberOfTuples()}")
+            
+            # Remove existing point cloud actor if it exists
+            if hasattr(self, 'point_cloud_actor') and self.point_cloud_actor is not None:
+                self.vtkRenderer.RemoveActor(self.point_cloud_actor)
+            
+            self.point_cloud_actor = vtk.vtkActor()
+            self.point_cloud_actor.SetMapper(mapper)
+            
+            # Set point size
+            self.point_cloud_actor.GetProperty().SetPointSize(2)
+            
+            # Add actor to renderer
+            self.vtkRenderer.AddActor(self.point_cloud_actor)
+            
+            # Reset camera (centers view on points)
+            self.vtkRenderer.ResetCamera()
+            
+            # Store point cloud data for later use
+            self.pcd_points_np = points_np
+            self.pcd_colors_np = rgb_values
+            
+            # Start the interactor
+            self.vtkWidget.GetRenderWindow().GetInteractor().Initialize()
+            self.vtkWidget.GetRenderWindow().Render()
+            
+            print(f"Loaded RGB-colored point cloud")
+            if return_actor:
+                return self.point_cloud_actor
+        except Exception as e:
+            print(f"Error loading RGB-colored point cloud: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fall back to regular point cloud
+            self.addPointCloudToVTK()
+        # 탑다운 시점 고정 (항상 except 밖에서 호출)
+        # self.setTopDownView()
 
     def addLanePolylineToVTK(self, points, color=(1,0,0), width=4):
 
         if points is None or len(points) < 2:
             return
-        import vtk
-        import numpy as np
-        from utils.polynomial import centripetal_catmull_rom
-        # 여러 개의 라인 actor를 리스트로 관리 (기존 선을 지우지 않음)
+
         if not hasattr(self, 'lane_vtk_polyline_actors'):
             self.lane_vtk_polyline_actors = []
-        # 곡선 보간 (3개 이상일 때)
-        if len(points) >= 3:
-            num_samples = 70
-            xs, ys = centripetal_catmull_rom(points[:, :2], num_samples=num_samples)
-            # z좌표도 t값 기준으로 보간
-            # t 계산 (Catmull-Rom 방식)
-            pts = np.asarray(points, dtype=float)
-            deltas = np.diff(pts, axis=0)
-            dist_alpha = np.sqrt((deltas**2).sum(axis=1))**0.5
-            t_orig = [0.0]
-            for da in dist_alpha:
-                t_orig.append(t_orig[-1] + da)
-            t_orig = np.array(t_orig)
-            t_orig /= t_orig[-1]
-            from scipy.interpolate import interp1d
-            t_lin = np.linspace(0, 1, num_samples)
-            # 중복 제거
-            t_orig_unique, unique_indices = np.unique(t_orig, return_index=True)
-            z_unique = points[:,2][unique_indices]
-            interp_kind = 'cubic' if len(t_orig_unique) > 3 else 'linear'
-            interp_z = interp1d(t_orig_unique, z_unique, kind=interp_kind)
-            zs = interp_z(t_lin)
-            curve_points = np.stack([xs, ys, zs], axis=1)
 
+        if len(points) >= 3:
+            curve_points = interpolate_lane_curve(points, num_samples=70)
         else:
             curve_points = points
         vtk_points = vtk.vtkPoints()
@@ -66,8 +225,7 @@ class LaneTools:
         self.vtkWidget.GetRenderWindow().Render()
 
 
-    def addLanePointsToVTK(self, points, color=(1,0,0), size=10, single_click=False):
-        print(f"[addLanePointsToVTK] points: {points}, color: {color}, size: {size}")
+    def addLanePointsToVTK(self, points, color=(1,0,0), size=10, single_click=False, return_actor=False):
         """
         points: (N, 3) numpy array
         color: RGB tuple (0~1)
@@ -127,7 +285,8 @@ class LaneTools:
         if not hasattr(self, 'lane_vtk_actors'):
             self.lane_vtk_actors = []
         self.lane_vtk_actors.append(actor)
-
+        if return_actor:
+            return actor
 
     def draw_lane_from_unified(self, lane_data):
         """
@@ -174,29 +333,24 @@ class LaneTools:
         
         # 2. VTK 뷰에 레인 그리기 (3D 좌표 사용)
         points_3d = lane_data.get('points_3d', [])
-        vtk_points = lane_data.get('vtk_points', [])
-        
-        # 3D 좌표가 있으면 VTK에 그리기
+        vtk_color = lane_info['vtk_color']
+        # 기존 actors 모두 제거
+        if 'vtk_point_actors' in lane_data:
+            for act in lane_data['vtk_point_actors']:
+                self.vtkRenderer.RemoveActor(act)
+        lane_data['vtk_point_actors'] = []
+        if points_3d:
+            for pt in points_3d:
+                actor = self.addLanePointsToVTK(pt, color=vtk_color, size=7, single_click=True, return_actor=True)
+                lane_data['vtk_point_actors'].append(actor)
+        # ----------- VTK polyline 추가
         if points_3d and len(points_3d) >= 2:
-            # numpy 배열로 변환
             points_array = np.array(points_3d)
-            
-            # VTK 포인트 추가
-            point_actors = []
-            # self.addLanePointsToVTK(points_array, color=vtk_color, size=7)
-            if hasattr(self, 'lane_vtk_actors') and self.lane_vtk_actors:
-                point_actors.append(self.lane_vtk_actors[-1])
-            lane_data['vtk_point_actors'] = point_actors
-            
-            # VTK 폴리라인 추가
             self.addLanePolylineToVTK(points=points_array, color=vtk_color, width=3)
             if hasattr(self, 'lane_vtk_polyline_actors') and self.lane_vtk_polyline_actors:
                 lane_data['vtk_actor'] = self.lane_vtk_polyline_actors[-1]
-            
-            # vtk_lanes에 추가 (삭제 시 필요)
             if hasattr(self, 'vtk_lanes'):
                 self.vtk_lanes.append(points_array)
-        
         return lane_data
 
     # def draw_lane_i2v(self, ):

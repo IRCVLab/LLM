@@ -6,31 +6,24 @@ matplotlib.use("Qt5Agg")
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush
+from PyQt5.QtCore import QEvent  # 명시적으로 QEvent 추가
+from PyQt5.QtWidgets import QApplication, QShortcut
+from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush, QKeySequence
 
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.path import Path
-import matplotlib.patches as patches
-import matplotlib.image as mpimg
-import numpy as np
 import cv2
-import random
-import json
 #from threading import Timer
 
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtk
-import open3d as o3d
-import matplotlib.cm as cm
-import matplotlib.colors as colors
 
-# Personnal modules
+from window_tools.viz import VizTools
+from window_tools.event import EventTools
 from utils.updater import DelayedUpdater
-from utils.polynomial import centripetal_catmull_rom
-from utils.converter import load_calibration_params, projection_img_to_pcd, lidar_points_in_image, sample_lane_points
+from utils.converter import load_calibration_params
 
 # set initial 4 points
 x1=800
@@ -45,11 +38,8 @@ y3=300
 x4=200
 y4=500
 
-from window_tools.lane import LaneTools
-from window_tools.vtk import VTKTools
-from window_tools.event import EventTools
 
-class Window(QWidget, LaneTools, VTKTools, EventTools):
+class Window(QWidget, VizTools, EventTools):
     imgIndex = -1
     saveFlag = True
     # Lane 색상 및 타입 매핑
@@ -126,14 +116,17 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         self.vtkWidget = QVTKRenderWindowInteractor(self)
         self.vtkRenderer = vtk.vtkRenderer()
         self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
-        self.addPointCloudToVTK()
-
+        # self.addPointCloudToVTK()
+        # self.addColoredPointCloudToVTK()
+        
         # Connect VTK click event to handler
-        self.vtkWidget.GetRenderWindow().GetInteractor().AddObserver(
-            "LeftButtonPressEvent", self.on_vtk_click)
+        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
+        interactor.AddObserver("LeftButtonPressEvent", self.on_vtk_click)
+        interactor.AddObserver("MouseMoveEvent", self.on_vtk_motion)
+        interactor.AddObserver("LeftButtonReleaseEvent", self.on_vtk_release)
+        self._drag = {'active': False, 'vtk_actor': None}
 
-
-        self.plotBackGround(self.img_path,0,True)
 
         addLaneLabel = QLabel()
         addLaneLabel.setText("Label Setting")
@@ -143,8 +136,8 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         addLaneListButton = QComboBox()
         addLaneListButton.addItems(["---Select line type---","White line", "White dash line", "Yellow line"])
 
-        lineGroupBox = QGroupBox("Line", self)
-
+        lineGroupBox = QGroupBox("Line Class", self)
+        vtkGroupBox = QGroupBox("3D View", self)
 
         # 라디오 버튼 스타일 시트
         radio_style = """
@@ -163,8 +156,8 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
                 border: 2px solid #666666;
             }
             QRadioButton::indicator::checked {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
-                border: 2px solid qlineargradient(spread:pad, x1:0, y1:0, x2:0.857143, y2:0.857955, stop:0 rgba(10, 242, 251, 255), stop:1 rgba(224, 6, 159, 255));
+                background-color: #c2185b;
+                border: 2px solid #888888;
             }
             QRadioButton::indicator::unchecked:hover {
                 background-color: #ff69b4;
@@ -174,30 +167,47 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
             }
         """
 
+        
         # Yellow Line 라디오 버튼
-        self.lineRadio1 = QRadioButton("Yellow Line", self)
+        self.lineRadio1 = QRadioButton("Yellow Line (q)", self)
         self.lineRadio1.setStyleSheet(radio_style)
-        self.lineRadio1.setChecked(True)
-        self.beforeRadioChecked = self.lineRadio1
         self.lineRadio1.clicked.connect(self.radioButtonClicked)
-
-        # White Line 라디오 버튼
-        self.lineRadio2 = QRadioButton("White Line", self)
+        self.lineRadio2 = QRadioButton("White Line (w)", self)
         self.lineRadio2.setStyleSheet(radio_style)
         self.lineRadio2.clicked.connect(self.radioButtonClicked)
-
-        # White Dash Line 라디오 버튼
-        self.lineRadio3 = QRadioButton("White Dash Line", self)
+        self.lineRadio3 = QRadioButton("White Dash Line (e)", self)
         self.lineRadio3.setStyleSheet(radio_style)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
-        addLaneButton = QPushButton("Add Lane")
+        self.lineButtonGroup = QButtonGroup(self)
+        self.lineButtonGroup.addButton(self.lineRadio1)
+        self.lineButtonGroup.addButton(self.lineRadio2)
+        self.lineButtonGroup.addButton(self.lineRadio3)
+        self.lineRadio1.setChecked(True)
+        self.beforeRadioChecked = self.lineRadio1
+
+        # VTK 컬러모드 라디오 버튼
+        self.colorRadio = QRadioButton("RGB (r)", self)
+        self.colorRadio.setStyleSheet(radio_style)
+        self.colorRadio.clicked.connect(self.radioButtonClicked)
+        self.intensityRadio = QRadioButton("Intensity (t)", self)
+        self.intensityRadio.setStyleSheet(radio_style)
+        self.intensityRadio.clicked.connect(self.radioButtonClicked)
+
+        self.vtkButtonGroup = QButtonGroup(self)
+        self.vtkButtonGroup.addButton(self.colorRadio)
+        self.vtkButtonGroup.addButton(self.intensityRadio)
+        self.colorRadio.setChecked(True)
+
+        
+           
+        addLaneButton = QPushButton("Add Lane (a)")
         addLaneButton.clicked.connect(self.add_lane)
 
-        delLaneButton = QPushButton("Delete Lane")
+        delLaneButton = QPushButton("Delete Lane (s)")
         delLaneButton.clicked.connect(self.delete_last_lane)
 
-        delPointButton = QPushButton("Delete Point")
+        delPointButton = QPushButton("Delete Point (d)")
         delPointButton.clicked.connect(self.delete_point)
 
         curPosButton = QPushButton("Show current Labels")
@@ -205,15 +215,15 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
 
-        nextImgButton = QPushButton("Next Image")
+        nextImgButton = QPushButton("Next Image (c)")
 
         nextImgButton.clicked.connect(self.loadNextImage)
 
-        preImgButton = QPushButton("Prev Image")
+        preImgButton = QPushButton("Prev Image (z)")
 
         preImgButton.clicked.connect(self.loadPrevImage)
 
-        saveButton = QPushButton("Save")
+        saveButton = QPushButton("Save (x)")
         saveButton.clicked.connect(lambda: self.saveAll(self.img_path))
 
         self.editBox = QPlainTextEdit()
@@ -239,13 +249,19 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
         lineGrouplayout.addWidget(self.lineRadio2)
         lineGrouplayout.addWidget(self.lineRadio3)
 
+        vtkGrouplayout = QVBoxLayout()
+        vtkGroupBox.setLayout(vtkGrouplayout)
+        vtkGrouplayout.addWidget(self.colorRadio)
+        vtkGrouplayout.addWidget(self.intensityRadio)
+
         addDelLayout = QHBoxLayout()
         addDelLayout.addWidget(delPointButton)
 
         addLayout = QVBoxLayout()
         addLayout.addWidget(addLaneLabel)
         addLayout.addWidget(lineGroupBox)
-
+        addLayout.addWidget(vtkGroupBox)
+        
         addLayout.addWidget(addLaneButton)
         addLayout.addWidget(delLaneButton)
         addLayout.addLayout(addDelLayout)
@@ -290,10 +306,98 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
         # __init__ 안에 추가
         self.canvas.mpl_connect('button_press_event', self.on_mpl_click)
+        
+        # 키보드 단축키 설정 - 전체 어플리케이션에 적용
+        self.setFocusPolicy(Qt.StrongFocus)
+        
+        # 키보드 이벤트를 전체 어플리케이션에 적용
+        QApplication.instance().installEventFilter(self)
+        
 
+        self.plotBackGround(self.img_path,0,True)
+
+    # 단축키 함수들
+    def select_yellow_line(self):
+        self.lineRadio1.setChecked(True)
+        self.radioButtonClicked()
+    
+    def select_white_line(self):
+        self.lineRadio2.setChecked(True)
+        self.radioButtonClicked()
+    
+    def select_white_dash_line(self):
+        self.lineRadio3.setChecked(True)
+        self.radioButtonClicked()
+    
+    def select_color(self):
+        self.colorRadio.setChecked(True)
+        self.vtkViewClicked()
+    
+    def select_intensity(self):
+        self.intensityRadio.setChecked(True)
+        self.vtkViewClicked()
+    
+    def eventFilter(self, obj, event):
+        """전체 어플리케이션에서 키보드 이벤트를 캡처
+        q: Yellow line button
+        w: white line button
+        e: white dash line button
+        a: add Lane button
+        s: delete Lane button
+        d: delete point button
+        z: prev image button
+        x: save button
+        c: next image button
+        """
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            text = event.text().lower()
+                        
+            # 단축키 처리
+            if text == 'q' or text=='ㅂ':
+                self.select_yellow_line()
+                return True
+            elif text == 'w' or text=='ㅈ':
+                self.select_white_line()
+                return True
+            elif text == 'e' or text=='ㄷ':
+                self.select_white_dash_line()
+                return True
+            elif text == 'a' or text=='ㅁ':
+                self.add_lane()
+                return True
+            elif text == 's' or text=='ㄴ':
+                self.delete_last_lane()
+                return True
+            elif text == 'd' or text=='ㅇ':
+                self.delete_point()
+                return True
+            elif text == 'z' or text=='ㅋ':
+                self.loadPrevImage()
+                return True
+            elif text == 'x' or text=='ㅌ':
+                self.saveAll(self.img_path)
+                return True
+            elif text == 'c' or text=='ㅊ':
+                self.loadNextImage()
+                return True
+            elif text == 'r' or text=='ㄱ':
+                self.select_color()
+                return True
+            elif text == 't' or text=='ㅅ':
+                self.select_intensity()
+                return True
+                
+        return super().eventFilter(obj, event)
+    
+    def keyPressEvent(self, event):
+        """기존 keyPressEvent 메서드는 유지하지만 이벤트 필터가 우선 처리함"""
+        # 이벤트 필터가 우선적으로 처리하도록 함
+        super().keyPressEvent(event)
 
 
     def plotBackGround(self,img_path,action,isFirst=False):
+        self.unified_lanes = []  # 이미지 바뀔 때 레인 정보 초기화
         ''' Plot background method '''
         isPlot = True
         isEdge = False
@@ -312,14 +416,24 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
 
         if hasattr(self, 'lane_curve_artists'):
-            for curve in self.lane_curve_artists:
-                curve.remove()
+            # 안전하게 커브 아티스트 제거
+            for curve in list(self.lane_curve_artists):
+                try:
+                    curve.remove()
+                except ValueError:
+                    # 이미 제거된 경우 무시
+                    pass
             self.lane_curve_artists.clear()
 
         # 점 아티스트도 함께 제거 (선택 사항)
+        # 점 아티스트도 함께 제거 (선택 사항)
         if hasattr(self, 'all_point_artists'):
-            for pt in self.all_point_artists:
-                pt.remove()
+            for pt in list(self.all_point_artists):
+                try:
+                    pt.remove()
+                except ValueError:
+                    # 이미 제거된 경우 무시
+                    pass
             self.all_point_artists.clear()
                 
         if isPlot:
@@ -360,7 +474,7 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
 
                 # matplotlib 등에서 RGB로 쓰려면 변환
                 img_undistorted = cv2.cvtColor(img_undistorted, cv2.COLOR_BGR2RGB)
-
+                self.img = img_undistorted
                 height, width, channels = img_undistorted.shape
 
                 if isFirst:
@@ -387,8 +501,10 @@ class Window(QWidget, LaneTools, VTKTools, EventTools):
                 # for faster scene update
                 self.canvas.setUpdatesEnabled(True)
                 self.vtkRenderer.RemoveAllViewProps() 
-                self.addPointCloudToVTK(self.imgIndex)
-
+                if self.intensityRadio.isChecked():
+                    self.addPointCloudToVTK(self.imgIndex)
+                elif self.colorRadio.isChecked():
+                    self.addColoredPointCloudToVTK(self.imgIndex)
 
     def loadImg(self, directory):
         try:
@@ -483,4 +599,3 @@ def genWindow(path):
     window.showMaximized()
     window.show()
     sys.exit(app.exec_())
-
