@@ -29,16 +29,20 @@ python main.py
 ## 📄 Documentation
 This version supports the **OpenLane V1** format and requires *images*, *PCD files*, and *camera and lidar calibration files*.
 
+#### Data
+- Put your images in `data/image/image` folder.
+- Put your pcd files in `data/image/pcd` folder.
+- Put your calibration files in `calibration` folder. (`r.txt`, `t.txt`, `k.txt`, `distortion.txt`)
+
 #### Usage
 
-1. Put your images and pcd files in `data/image/image` and `data/image/pcd` folder.
-2. Put your calibration files in `calibration` folder. (`r.txt`, `t.txt`, `k.txt`, `distortion.txt`)
-3. Run `python main.py`
-4. Choose the class in the right panel.
-5. Click the point you want to label in the left image.
-6. Click the 'Add Lane' button. Also, you can delete the points and lane by clicking the 'Delete' button.
-7. Click the 'Save' button to save the label. (`data/label `folder)
+1. Run `python main.py`
+2. Choose the class of lane. 
+3. Click the point you want to label on the left image or the right  window.
+4. Click the 'Add Lane' button. Also, you can delete the points and lane by clicking the 'Delete' button.
+5. Click the 'Save' button to save the label or 'Next' button to save and move to the next image. (`data/label `folder)
 
+- You can use keyboard shortcuts to add, delete, move and so on..
 ---
 
 This project is based on: [Road_Labeler](https://github.com/InhwanBae/Road_Labeler)
