@@ -7,10 +7,11 @@ import os
 import vtk
 import json
 import numpy as np
+import math
 import open3d as o3d
 import matplotlib.pyplot as plt
 
-from utils.converter import load_calibration_params, projection_pcd_to_img, projection_img_to_pcd, interpolate_lane_curve
+from utils.converter import load_calibration_params, projection_pcd_to_img, projection_img_to_pcd, interpolate_lane_curve, centripetal_catmull_rom
 
 class EventTools:
     """
@@ -118,7 +119,20 @@ class EventTools:
             points_3d, _ = projection_img_to_pcd(
                 rgb_image, np_points, k, r, t, points_2d, single_click=True
             )
-
+            print(f"[on_mpl_click] points_3d: {points_3d}")
+            # --- 연선(폴리라인) 디버깅: 이미지→3D→VTK 변환 과정 ---
+            if points_3d is not None:
+                if points_3d.ndim == 1:
+                    pts3d_iter = [points_3d]
+                else:
+                    pts3d_iter = points_3d
+                for idx, pt3d in enumerate(pts3d_iter):
+                    print(f"[DEBUG][IMG→3D] Polyline idx={idx} 3D point (lidar/world): {pt3d}")
+                    pt = np.array(pt3d).reshape(3, 1)
+                    pt_cam = r @ pt + t
+                    print(f"[DEBUG][IMG→3D] Polyline idx={idx} pt_cam (camera coords): {pt_cam.ravel()} (z={pt_cam[2,0]})")
+                print(f"[DEBUG][IMG→3D] Polyline 전체 {len(pts3d_iter)}개 3D 점 변환 완료.")
+            # -------------------------------------------------------
             self.addLanePointsToVTK(points_3d, color=lane_info['vtk_color'], size=7, single_click=True)
             if not hasattr(self, 'vtk_lane_points'):
                 self.vtk_lane_points = []
@@ -170,7 +184,6 @@ class EventTools:
             lane['img_points'][ei].set_offsets([event.xdata, event.ydata])
         # update the line artist with smooth curve
         if lane.get('img_curve') is not None:
-            from utils.polynomial import centripetal_catmull_rom
             xs, ys = centripetal_catmull_rom(lane['points_2d'])
             lane['img_curve'].set_data(xs, ys)
         self.canvas.draw_idle()
@@ -236,7 +249,6 @@ class EventTools:
 
         # update 2D curve with smooth interpolation
         if lane.get('img_curve') is not None:
-            from utils.polynomial import centripetal_catmull_rom
             xs, ys = centripetal_catmull_rom(lane['points_2d'])
             lane['img_curve'].set_data(xs, ys)
             
@@ -257,20 +269,72 @@ class EventTools:
     def on_vtk_click(self, obj, event):
         # 클릭 위치 저장 (press)
         interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        
+        if self._drag.get('active'):
+            self._drag['active'] = False
+            self.vtkWidget.GetRenderWindow().Render()
+            return
+
+        # otherwise: fresh click processing
         self._vtk_press_pos = interactor.GetEventPosition()
         self._vtk_point_added = False  # 실제 point 생성은 기존 코드에서 판단
 
-        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
         ctrl = interactor.GetControlKey()
         shift = interactor.GetShiftKey()
         alt = interactor.GetAltKey() if hasattr(interactor, "GetAltKey") else False
+        
+        # window control
         if ctrl or shift or alt:
             return
         x, y = interactor.GetEventPosition()
+        print(f"[VTK CLICK] Display coordinates: x={x}, y={y}")
         renderer = self.vtkRenderer
 
         picker = vtk.vtkPointPicker()
         picker.Pick(x, y, 0, renderer)
+
+
+        # ------------------------------------------------------------------
+        # Try to find nearest existing point in SCREEN‐PIXEL space (<=10 px)
+        # ------------------------------------------------------------------
+        best_li = best_ei = None
+        best_px2 = np.inf  # squared pixel distance
+        debug_dists = []
+        for li, lane in enumerate(getattr(self, 'unified_lanes', [])):
+            # 반드시 point와 actor를 같이 zip으로 순회
+            for ei, (p3, actor) in enumerate(zip(lane.get('points_3d', []), lane.get('vtk_point_actors', []))):
+                if p3 is None:
+                    continue
+                renderer.SetWorldPoint(*p3, 1.0)
+                renderer.WorldToDisplay()
+                sx, sy, _ = renderer.GetDisplayPoint()
+                dx = sx - x
+                dy = sy - y
+                d2 = dx*dx + dy*dy
+                debug_dists.append((li, ei, math.sqrt(d2)))
+                if d2 < best_px2:
+                    best_px2 = d2
+                    best_li, best_ei = li, ei
+                    best_actor = actor
+        tol_px = 10.0  # pixels
+        tol2 = tol_px * tol_px
+        if best_li is not None and best_px2 < tol2:
+            interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballActor())
+            lane = self.unified_lanes[best_li]
+            # Derive display depth for correct drag mapping
+            renderer.SetWorldPoint(*lane['points_3d'][best_ei], 1.0)
+            renderer.WorldToDisplay()
+            disp_z = renderer.GetDisplayPoint()[2]
+            self._drag.update(active=True,
+                              lane_idx=best_li,
+                              end_idx=best_ei,
+                              mpl_artist=lane['img_points'][best_ei] if best_ei < len(lane.get('img_points', [])) else None,
+                              vtk_actor=best_actor,
+                              vtk_depth=disp_z)
+            print(f"[VTK click] Drag start on existing actor: lane={best_li}, idx={best_ei}")
+            return  # handled as drag start
+
+        print("[VTK click] Add new point.")
 
         if not (hasattr(self, 'pcd_points_np') and hasattr(self, 'pcd_colors_np')):
             try:
@@ -290,17 +354,10 @@ class EventTools:
                 print(f"[VTK Click] Could not load point cloud: {e}")
                 return
 
-        if self.pcd_colors_np is not None:
-            color_norm = np.linalg.norm(self.pcd_colors_np, axis=1)
-            color_mask = color_norm > 50
-            filtered_points = self.pcd_points_np[color_mask]
-        else:
-            filtered_points = self.pcd_points_np
-
         min_dist = float('inf')
         nearest = None
         renderer = self.vtkRenderer
-        for pt in filtered_points:
+        for pt in self.pcd_points_np:
             renderer.SetWorldPoint(pt[0], pt[1], pt[2], 1.0)
             renderer.WorldToDisplay()
             display_coords = renderer.GetDisplayPoint()
@@ -311,11 +368,17 @@ class EventTools:
                 min_dist = dist
                 nearest = pt
 
+        if nearest is not None:
+            print(f"[VTK CLICK] Nearest world coordinates: {nearest}")
+            renderer.SetWorldPoint(nearest[0], nearest[1], nearest[2], 1.0)
+            renderer.WorldToDisplay()
+            sx, sy, sz = renderer.GetDisplayPoint()
+
         # --- Accumulate clicked points for VTK polyline ---
         if not hasattr(self, 'vtk_lane_points'):
             self.vtk_lane_points = []
         self.vtk_lane_points.append(nearest)
-        # VTK 점 시각화
+        # VTK 점 시각화 (endpoint 클릭 시 해당 점 actor 제거)
         lane_type = None
         if self.beforeRadioChecked == self.lineRadio1:
             lane_type = 'Yellow'
@@ -325,6 +388,26 @@ class EventTools:
             lane_type = 'WhiteDash'
         lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
         vtk_color = lane_info['vtk_color']
+
+        # --- endpoint 클릭 시 해당 점 actor 제거 ---
+        # (unified_lanes의 endpoint와 일치하는지 검사)
+        remove_idx = None
+        for li, lane in enumerate(getattr(self, 'unified_lanes', [])):
+            if not lane.get('points_3d'):
+                continue
+            # endpoint만 검사
+            for ei in [0, len(lane['points_3d'])-1]:
+                if np.allclose(lane['points_3d'][ei], nearest, atol=1e-4):
+                    # VTK endpoint actor 제거
+                    if 'vtk_point_actors' in lane and ei < len(lane['vtk_point_actors']):
+                        actor = lane['vtk_point_actors'][ei]
+                        self.vtkRenderer.RemoveActor(actor)
+                        lane['vtk_point_actors'][ei] = None
+                    remove_idx = (li, ei)
+                    break
+            if remove_idx:
+                break
+        # 점을 새로 추가하는 경우만 actor 생성
         self.addLanePointsToVTK(points=np.array([nearest]), color=vtk_color, size=7, single_click=True)
         # --- 3D→2D 변환 및 이미지에 시각화 ---
         try:
@@ -334,12 +417,16 @@ class EventTools:
                 t, r, k, _ = load_calibration_params()
                 self.calibration_params = (t, r, k, _)
             img_shape = self.img.shape if hasattr(self, "img") else None
+
+            # --- 추가: 카메라 좌표계 변환 결과 출력 ---
+            pt = np.array(nearest).reshape(3, 1)
+            pt_cam = r @ pt + t  # shape (3,1)
+            # ------------------------------------------------
             points_2d = projection_pcd_to_img(
                 np.array([nearest]), k, r, t, img_shape, single_click=True
             )
             # ---- validate projection within image bounds ----
             if points_2d is None or len(points_2d) == 0:
-                # revert recently added VTK point
                 self.delete_vtk_point()
                 QMessageBox.warning(None, 'WARNING', 'Clicked point projects outside current image.')
                 return
@@ -348,7 +435,6 @@ class EventTools:
             if img_shape is not None:
                 h, w = img_shape[:2]
                 margin = 10  # pixels margin from image edges
-                
                 # Check if point is outside image bounds or too close to edges
                 if (x_img < margin or y_img < margin or 
                     x_img >= w - margin or y_img >= h - margin):
@@ -361,7 +447,6 @@ class EventTools:
                         f'Image size: {w}x{h}, Clicked: ({x_img:.1f}, {y_img:.1f})'
                     )
                     return
-            print(f"[on_vtk_click] shape: {points_2d.shape}")
             if points_2d is not None and len(points_2d) > 0:
                 # 산점도 표시
                 artist = self.axes.scatter(
@@ -386,15 +471,125 @@ class EventTools:
 
 
     def on_vtk_release(self, obj, event):
-        # 드래그(시점 이동 등)로 판단되면 point 삭제
         interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
         release_pos = interactor.GetEventPosition()
-        # 클릭/릴리즈 위치가 다르고, point가 추가된 경우만 삭제
-        if hasattr(self, '_vtk_press_pos') and self._vtk_point_added:
-            if self._vtk_press_pos != release_pos:
-                self.delete_vtk_point()
-                self._vtk_point_added = False
+        interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
 
+        if self._drag.get('active'):
+            self._drag['active'] = False
+            return
+
+        if self._vtk_point_added and hasattr(self, '_vtk_press_pos') and self._vtk_press_pos != release_pos:
+            self.delete_vtk_point()
+            self._vtk_point_added = False
+
+
+    def on_vtk_motion(self, obj, event):
+        if not self._drag.get('active') or self._drag.get('vtk_actor') is None:
+            return
+        interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        x, y = interactor.GetEventPosition()
+        print(f"[VTK Motion] Display coordinates: x={x}, y={y}")
+        renderer = self.vtkRenderer
+
+        # 화면상 마우스 위치에서 가장 가까운 실제 포인트클라우드 점을 찾음
+        min_dist = float('inf')
+        nearest = None
+        for pt in self.pcd_points_np:
+            renderer.SetWorldPoint(pt[0], pt[1], pt[2], 1.0)
+            renderer.WorldToDisplay()
+            display_coords = renderer.GetDisplayPoint()
+            dx = display_coords[0] - x
+            dy = display_coords[1] - y
+            dist = dx*dx + dy*dy
+            if dist < min_dist:
+                min_dist = dist
+                nearest = pt
+        if nearest is None:
+            return
+        nx, ny, nz = nearest[0], nearest[1], nearest[2]
+        li = self._drag['lane_idx']
+        ei = self._drag['end_idx']
+        lane = self.unified_lanes[li]
+        
+        print(f"[VTK Motion] Mouse display: ({x:.1f}, {y:.1f})")
+        print(f"[VTK Motion] Nearest world: [{nx:.3f}, {ny:.3f}, {nz:.3f}], min_dist={min_dist:.1f}")
+        print(f"[VTK Motion] Dragging lane_idx={li}, end_idx={ei}")
+        print(f"[VTK Motion] Old 3D: {lane['points_3d'][ei]} → New: [{nx:.3f}, {ny:.3f}, {nz:.3f}]")
+        nearest_idx = np.where((self.pcd_points_np == nearest).all(axis=1))[0]
+        if len(nearest_idx) > 0:
+            print(f"[VTK Motion] Nearest point index in pcd: {nearest_idx[0]}")
+        # 1. 데이터 갱신
+        lane['points_3d'][ei] = [nx, ny, nz]
+        # 2. 점 actor 이동 (드래그 중인 점은 actor를 항상 remove + None)
+        if 'vtk_point_actors' in lane and ei < len(lane['vtk_point_actors']) and lane['vtk_point_actors'][ei] is not None:
+            self.vtkRenderer.RemoveActor(lane['vtk_point_actors'][ei])
+            lane['vtk_point_actors'][ei] = None
+        # (actor 이동은 하지 않음: 항상 remove)
+        # 3. 선 actor polydata 갱신 (곡선 보간 적용)
+        if lane.get('vtk_actor') is not None:
+            pts3d = np.array(lane['points_3d'])
+            if len(pts3d) >= 3:
+                curve_points = interpolate_lane_curve(pts3d, num_samples=70)
+            else:
+                curve_points = pts3d
+            polydata = lane['vtk_actor'].GetMapper().GetInput()
+            vtk_pts = polydata.GetPoints()
+            # 점 개수가 다르면 새로 할당
+            if vtk_pts is None or vtk_pts.GetNumberOfPoints() != len(curve_points):
+                vtk_pts = vtk.vtkPoints()
+                for pt in curve_points:
+                    vtk_pts.InsertNextPoint(float(pt[0]), float(pt[1]), float(pt[2]))
+                polydata.SetPoints(vtk_pts)
+            else:
+                for i, pt in enumerate(curve_points):
+                    vtk_pts.SetPoint(i, float(pt[0]), float(pt[1]), float(pt[2]))
+                vtk_pts.Modified()
+            lane['vtk_actor'].GetMapper().Update()
+        # 4. 3D → 2D 프로젝션 및 이미지 아티스트 동기화
+        try:
+            if not hasattr(self, 'calibration_params'):
+                t, r, k, _ = load_calibration_params()
+            else:
+                t, r, k, _ = self.calibration_params
+            img_shape = self.img.shape if hasattr(self, 'img') else None
+            pt2d = projection_pcd_to_img(np.array([[nx, ny, nz]]), k, r, t, img_shape, single_click=True)
+            if pt2d is not None and len(pt2d) > 0:
+                lane['points_2d'][ei] = [float(pt2d[0][0]), float(pt2d[0][1])]
+                if 'img_points' in lane and ei < len(lane['img_points']) and lane['img_points'][ei] is not None:
+                    lane['img_points'][ei].set_offsets(lane['points_2d'][ei])
+                # Update curve
+                if lane.get('img_curve') is not None:
+                    xs, ys = centripetal_catmull_rom(lane['points_2d'])
+                    lane['img_curve'].set_data(xs, ys)
+                self.canvas.draw_idle()
+        except Exception as e:
+            print(f"[on_vtk_motion] projection error: {e}")
+        # 5. 렌더 갱신
+        self.vtkWidget.GetRenderWindow().Render()
+
+        # --- 드래그 종료 후 점 actor 재생성 (모든 점에 대해) ---
+        if 'vtk_point_actors' in lane:
+            # 기존 actor를 None으로 비워뒀으니 새로 생성
+            actor = self.addLanePointsToVTK(points=np.array([[nx, ny, nz]]), color=(1,0,0), size=7, single_click=True, return_actor=True)
+            lane['vtk_point_actors'][ei] = actor
+
+    def vtkViewClicked(self):
+        # --- 기존 point cloud actor만 제거 (lane 등은 유지) ---
+        if hasattr(self, 'pcd_vtk_actor') and self.pcd_vtk_actor is not None:
+            try:
+                self.vtkRenderer.RemoveActor(self.pcd_vtk_actor)
+            except Exception:
+                pass
+            self.pcd_vtk_actor = None
+        # --- 새 point cloud 추가 ---
+        if self.colorRadio.isChecked():
+            actor = self.addColoredPointCloudToVTK(self.imgIndex, return_actor=True)
+            self.pcd_vtk_actor = actor
+        elif self.intensityRadio.isChecked():
+            actor = self.addPointCloudToVTK(self.imgIndex, return_actor=True)
+            self.pcd_vtk_actor = actor
+        
     def radioButtonClicked(self):
         self.beforeRadioChecked.setAutoExclusive(False)
         self.beforeRadioChecked.setChecked(False)
@@ -499,8 +694,6 @@ class EventTools:
         self.delete_vtk_point()
         
     def delete_img_point(self):
-        """이미지에서 마지막 점 삭제 (현재 그리는 중인 레인의 점)"""
-        # 가장 최근 레인의 마지막 점만 삭제
         if hasattr(self, 'lane_points') and self.lane_points:
             self.lane_points.pop()
         if hasattr(self, 'lane_point_artists') and self.lane_point_artists:
@@ -512,8 +705,6 @@ class EventTools:
 
 
     def delete_vtk_point(self):
-        """VTK에서 마지막 점 삭제 (현재 그리는 중인 레인의 점)"""
-        # 가장 최근 레인(폴리라인) 구조에서 마지막 점 제거
         # if hasattr(self, 'vtk_lanes') and self.vtk_lanes:
         #     last_lane = self.vtk_lanes[-1]
         #     # numpy 배열인지, 파이썬 리스트인지 구분

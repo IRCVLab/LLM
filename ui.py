@@ -116,15 +116,17 @@ class Window(QWidget, VizTools, EventTools):
         self.vtkWidget = QVTKRenderWindowInteractor(self)
         self.vtkRenderer = vtk.vtkRenderer()
         self.vtkWidget.GetRenderWindow().AddRenderer(self.vtkRenderer)
-        self.addPointCloudToVTK()
-
+        # self.addPointCloudToVTK()
+        # self.addColoredPointCloudToVTK()
+        
         # Connect VTK click event to handler
         interactor = self.vtkWidget.GetRenderWindow().GetInteractor()
+        interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
         interactor.AddObserver("LeftButtonPressEvent", self.on_vtk_click)
+        interactor.AddObserver("MouseMoveEvent", self.on_vtk_motion)
         interactor.AddObserver("LeftButtonReleaseEvent", self.on_vtk_release)
+        self._drag = {'active': False, 'vtk_actor': None}
 
-
-        self.plotBackGround(self.img_path,0,True)
 
         addLaneLabel = QLabel()
         addLaneLabel.setText("Label Setting")
@@ -134,8 +136,8 @@ class Window(QWidget, VizTools, EventTools):
         addLaneListButton = QComboBox()
         addLaneListButton.addItems(["---Select line type---","White line", "White dash line", "Yellow line"])
 
-        lineGroupBox = QGroupBox("Line", self)
-
+        lineGroupBox = QGroupBox("Line Class", self)
+        vtkGroupBox = QGroupBox("3D View", self)
 
         # 라디오 버튼 스타일 시트
         radio_style = """
@@ -165,23 +167,40 @@ class Window(QWidget, VizTools, EventTools):
             }
         """
 
+        
         # Yellow Line 라디오 버튼
         self.lineRadio1 = QRadioButton("Yellow Line (q)", self)
         self.lineRadio1.setStyleSheet(radio_style)
-        self.lineRadio1.setChecked(True)
-        self.beforeRadioChecked = self.lineRadio1
         self.lineRadio1.clicked.connect(self.radioButtonClicked)
-
-        # White Line 라디오 버튼
         self.lineRadio2 = QRadioButton("White Line (w)", self)
         self.lineRadio2.setStyleSheet(radio_style)
         self.lineRadio2.clicked.connect(self.radioButtonClicked)
-
-        # White Dash Line 라디오 버튼
         self.lineRadio3 = QRadioButton("White Dash Line (e)", self)
         self.lineRadio3.setStyleSheet(radio_style)
         self.lineRadio3.clicked.connect(self.radioButtonClicked)
 
+        self.lineButtonGroup = QButtonGroup(self)
+        self.lineButtonGroup.addButton(self.lineRadio1)
+        self.lineButtonGroup.addButton(self.lineRadio2)
+        self.lineButtonGroup.addButton(self.lineRadio3)
+        self.lineRadio1.setChecked(True)
+        self.beforeRadioChecked = self.lineRadio1
+
+        # VTK 컬러모드 라디오 버튼
+        self.colorRadio = QRadioButton("RGB (r)", self)
+        self.colorRadio.setStyleSheet(radio_style)
+        self.colorRadio.clicked.connect(self.radioButtonClicked)
+        self.intensityRadio = QRadioButton("Intensity (t)", self)
+        self.intensityRadio.setStyleSheet(radio_style)
+        self.intensityRadio.clicked.connect(self.radioButtonClicked)
+
+        self.vtkButtonGroup = QButtonGroup(self)
+        self.vtkButtonGroup.addButton(self.colorRadio)
+        self.vtkButtonGroup.addButton(self.intensityRadio)
+        self.colorRadio.setChecked(True)
+
+        
+           
         addLaneButton = QPushButton("Add Lane (a)")
         addLaneButton.clicked.connect(self.add_lane)
 
@@ -230,13 +249,19 @@ class Window(QWidget, VizTools, EventTools):
         lineGrouplayout.addWidget(self.lineRadio2)
         lineGrouplayout.addWidget(self.lineRadio3)
 
+        vtkGrouplayout = QVBoxLayout()
+        vtkGroupBox.setLayout(vtkGrouplayout)
+        vtkGrouplayout.addWidget(self.colorRadio)
+        vtkGrouplayout.addWidget(self.intensityRadio)
+
         addDelLayout = QHBoxLayout()
         addDelLayout.addWidget(delPointButton)
 
         addLayout = QVBoxLayout()
         addLayout.addWidget(addLaneLabel)
         addLayout.addWidget(lineGroupBox)
-
+        addLayout.addWidget(vtkGroupBox)
+        
         addLayout.addWidget(addLaneButton)
         addLayout.addWidget(delLaneButton)
         addLayout.addLayout(addDelLayout)
@@ -289,6 +314,8 @@ class Window(QWidget, VizTools, EventTools):
         QApplication.instance().installEventFilter(self)
         
 
+        self.plotBackGround(self.img_path,0,True)
+
     # 단축키 함수들
     def select_yellow_line(self):
         self.lineRadio1.setChecked(True)
@@ -301,6 +328,14 @@ class Window(QWidget, VizTools, EventTools):
     def select_white_dash_line(self):
         self.lineRadio3.setChecked(True)
         self.radioButtonClicked()
+    
+    def select_color(self):
+        self.colorRadio.setChecked(True)
+        self.vtkViewClicked()
+    
+    def select_intensity(self):
+        self.intensityRadio.setChecked(True)
+        self.vtkViewClicked()
     
     def eventFilter(self, obj, event):
         """전체 어플리케이션에서 키보드 이벤트를 캡처
@@ -345,6 +380,12 @@ class Window(QWidget, VizTools, EventTools):
                 return True
             elif text == 'c' or text=='ㅊ':
                 self.loadNextImage()
+                return True
+            elif text == 'r' or text=='ㄱ':
+                self.select_color()
+                return True
+            elif text == 't' or text=='ㅅ':
+                self.select_intensity()
                 return True
                 
         return super().eventFilter(obj, event)
@@ -460,8 +501,10 @@ class Window(QWidget, VizTools, EventTools):
                 # for faster scene update
                 self.canvas.setUpdatesEnabled(True)
                 self.vtkRenderer.RemoveAllViewProps() 
-                self.addPointCloudToVTK(self.imgIndex)
-
+                if self.intensityRadio.isChecked():
+                    self.addPointCloudToVTK(self.imgIndex)
+                elif self.colorRadio.isChecked():
+                    self.addColoredPointCloudToVTK(self.imgIndex)
 
     def loadImg(self, directory):
         try:

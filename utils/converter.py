@@ -1,11 +1,13 @@
-import numpy as np
-import cv2 
-import open3d as o3d
-import matplotlib.pyplot as plt
 import io
+import cv2
+import vtk
+import numpy as np
+import open3d as o3d
 
+import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
-from window_tools.viz import centripetal_catmull_rom
+
+from utils.polynomial import centripetal_catmull_rom
 
 def interpolate_lane_curve(points, num_samples=20):
     """
@@ -275,9 +277,7 @@ def projection_pcd_to_img(
     else:
         t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1) / 1000.0
         lane_polyline_cam = transform_to_camera(lane_polyline_lidar, r_lidar_to_camera, t_lidar_to_camera)  # (3, N)
-        # 2. Camera → Image projection
         lane_polyline_img = project_to_image(lane_polyline_cam, k)  # (N, 2)
-        # 3. 깊이(z)가 0 이하인 점 제외
         z_cam = lane_polyline_cam[2, :]
         mask = z_cam > 0.01
         lane_polyline_img = lane_polyline_img[mask]
@@ -290,6 +290,57 @@ def projection_pcd_to_img(
         if lane_polyline_img.ndim != 2 or lane_polyline_img.shape[0] < 2:
             return np.empty((0, 2))
         return lane_polyline_img
+
+
+def colorize_pcd_from_image(
+    point_cloud_np,
+    rgb_image,
+    k,                    # (3, 3) camera intrinsic
+    r_lidar_to_camera,    # (3, 3) extrinsic rotation
+    t_lidar_to_camera,):
+
+    t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1) / 1000.0
+    # Remove filter_points_in_front; use all points
+    points_in_camera = transform_to_camera(point_cloud_np, r_lidar_to_camera, t_lidar_to_camera)  # (3, N)
+    # points_in_camera = ax @ points_in_camera
+    # Camera front filter (z > 0.1)
+    cam_front_mask = points_in_camera[2, :] > 0.1
+    # cam_front_mask = np.ones(points_in_camera.shape[1], dtype=bool)
+    points_in_camera = points_in_camera[:, cam_front_mask]
+    points_in_front = point_cloud_np[cam_front_mask]
+    points_in_image = project_to_image(points_in_camera, k)
+
+    # Debug: projection range
+    xs, ys = points_in_image[:, 0], points_in_image[:, 1]
+    
+    # Create VTK points with colors
+    vtk_points = vtk.vtkPoints()
+    vtk_colors = vtk.vtkUnsignedCharArray()
+    vtk_colors.SetNumberOfComponents(3)
+    vtk_colors.SetName("Colors")
+    
+    # Original indices to map colors back to full point cloud (points that survived cam_front_mask)
+    original_indices = np.arange(points_in_front.shape[0])
+    rgb_values = np.zeros((point_cloud_np.shape[0], 3), dtype=np.uint8)
+    
+    # Get RGB values for points that project onto the image
+    height, width = rgb_image.shape[:2]
+    for i, (x, y) in enumerate(points_in_image):
+        x_int, y_int = int(x), int(y)
+        if 0 <= x_int < width and 0 <= y_int < height:
+            # Get RGB value at projected point
+            rgb = rgb_image[y_int, x_int]
+            rgb_values[original_indices[i]] = rgb
+            
+            # Add the point with its color
+            vtk_points.InsertNextPoint(points_in_front[i])
+            vtk_colors.InsertNextTuple3(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    
+    return vtk_points, vtk_colors, rgb_values
+
+
+
+####################################################################################
 
 
 def get_img_from_fig(fig, dpi=180):
