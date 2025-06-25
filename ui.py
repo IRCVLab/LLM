@@ -210,7 +210,7 @@ class Window(QWidget, VizTools, EventTools):
         delPointButton = QPushButton("Delete Point (d)")
         delPointButton.clicked.connect(self.delete_point)
 
-        curPosButton = QPushButton("Show current Labels")
+        curPosButton = QPushButton("Show current Labels (f)")
         curPosButton.clicked.connect(self.showPosition)
 
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -387,6 +387,9 @@ class Window(QWidget, VizTools, EventTools):
             elif text == 't' or text=='ㅅ':
                 self.select_intensity()
                 return True
+            elif text == 'f' or text=='ㄹ':
+                self.showPosition()
+                return True
                 
         return super().eventFilter(obj, event)
     
@@ -513,19 +516,59 @@ class Window(QWidget, VizTools, EventTools):
                 if file.endswith('.jpg') or file.endswith('.png'):
                     print(file)
                     self.list_img_path.append(os.path.join('image', file))
-            print("\ntotal", len(self.list_img_path), "files loaded\n")
         except Exception as e:
             sys.exit(str(e))
 
     def showPosition(self):
-        ''' display current labeled lanes '''
-        text = "Current Labeled Lanes:\n\n"
-        
-        # 라인 정보 표시
-        if hasattr(self, 'sampled_uv') and self.sampled_uv is not None:
-            for i, lane_type in enumerate(self.list_points_type):
-                text += f"{i+1} Lane: {lane_type}\n"
-            text += f"\nTotal number of labeled lanes: {len(self.list_points_type)}\n"
+        ''' display current labeled lanes in requested format '''
+        # Helper to count lane types
+        def count_lanes(lane_types):
+            counts = {"White lane": 0, "White Dash lane": 0, "Yellow lane": 0}
+            for t in lane_types:
+                t_lower = str(t).lower().replace('_', ' ').replace('-', ' ').replace('  ', ' ')
+                t_lower = t_lower.replace('lane', '').strip()
+                if "white dash" in t_lower or "whitedash" in t_lower:
+                    counts["White Dash lane"] += 1
+                elif "white" in t_lower:
+                    counts["White lane"] += 1
+                elif "yellow" in t_lower:
+                    counts["Yellow lane"] += 1
+            return counts
+
+        # 출력 라벨 정의
+        output_labels = {
+            "White lane": "White",
+            "White Dash lane": "White Dash",
+            "Yellow lane": "Yellow"
+        }
+        # Current working data
+        text = "Current Working Data:\n"
+        if hasattr(self, 'list_points_type'):
+            current_counts = count_lanes(self.list_points_type)
+            for name in ["White lane", "White Dash lane", "Yellow lane"]:
+                text += f"{output_labels[name]}: {current_counts[name]} lanes\n"
+        else:
+            text += "No data.\n"
+        text += "\n"
+
+        # Processed data (labeled data)
+        text += "Processed Data:\n"
+        # 'self.labeled_data'가 존재하는지 확인
+        labeled_types = []
+        if hasattr(self, 'labeled_data') and self.labeled_data is not None:
+            # labeled_data가 [{'type': ...}, ...] 형식이면 아래처럼 추출
+            for item in self.labeled_data:
+                if isinstance(item, dict) and 'type' in item:
+                    labeled_types.append(item['type'])
+                else:
+                    labeled_types.append(str(item))
+        else:
+            labeled_types = []
+        total_labeled = len(labeled_types)
+        text += f"Total {total_labeled} data\n"
+        labeled_counts = count_lanes(labeled_types)
+        for name in ["White lane", "White Dash lane", "Yellow lane"]:
+            text += f"{output_labels[name]}: {labeled_counts[name]} lanes\n"
 
         self.editBox.setPlainText(text)
 
