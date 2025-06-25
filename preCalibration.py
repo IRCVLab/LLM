@@ -27,7 +27,7 @@ class PreCalibrationUI(QWidget):
         self.pcd_dir = pcd_dir
         
         # Create output directories if they don't exist
-        os.makedirs('./data/RoiPCD/', exist_ok=True)
+        os.makedirs('./data/RoIPCD/', exist_ok=True)
         os.makedirs('./data/WholePCD/', exist_ok=True)
         os.makedirs('./data/Image/', exist_ok=True)
         
@@ -127,6 +127,11 @@ class PreCalibrationUI(QWidget):
         right_layout.addWidget(self.crop_btn)
         self.crop_btn.clicked.connect(self.on_apply_clicked)
         self._box_widget_enabled = False
+        
+        # --- Calibration Button ---
+        self.calib_btn = QPushButton('Run Calibration')
+        right_layout.addWidget(self.calib_btn)
+        self.calib_btn.clicked.connect(self.on_calibration_clicked)
         
         # Connect prev/next buttons after they are initialized
         self.prev_btn.clicked.connect(self.prev_file)
@@ -496,6 +501,20 @@ class PreCalibrationUI(QWidget):
         self.load_and_display_image()
         self.load_pointcloud()
         self.update_button_states()
+        
+    def on_calibration_clicked(self):
+        """Run the calibration script when the button is clicked"""
+        import subprocess
+        try:
+            # Get the absolute path to a.sh in the same directory as this script
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run_calibration.sh')
+            # Make the script executable
+            os.chmod(script_path, 0o755)
+            # Run the script
+            subprocess.Popen(['/bin/bash', script_path])
+            print("[Calibration] Started calibration script")
+        except Exception as e:
+            print(f"[ERROR] Failed to run calibration script: {str(e)}")
 
 if __name__ == "__main__":
     # bbox center point
