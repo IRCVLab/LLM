@@ -442,12 +442,19 @@ class PreCalibrationUI(QWidget):
             print(f"[ERROR] Failed to load image: {self.current_img_path}")
             return
             
+        # Save a copy of the image to the Image directory
+        img_filename = os.path.basename(self.current_img_path)
+        output_img_path = os.path.join('./data/Image/', img_filename)
+        cv2.imwrite(output_img_path, img)
+        print(f"[load_and_display_image] Saved image to {output_img_path}")
+        
+        # Display the image
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         self.ax.clear()
         self.ax.imshow(img)
         self.ax.axis('off')
         self.canvas.draw()
-        self.setWindowTitle(f"Crop ROI for Calibration - {os.path.basename(self.current_img_path)}")
+        self.setWindowTitle(f"Crop ROI for Calibration - {img_filename}")
     
     def load_pointcloud(self):
         """Load and display the current point cloud"""
