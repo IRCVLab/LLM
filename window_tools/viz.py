@@ -35,31 +35,20 @@ class VizTools:
         # 2. Normalize intensity to [0, 1] for color
         intensity_normalized = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
         colors = np.stack([intensity_normalized]*3, axis=1)  # grayscale → RGB (N x 3)
-
-        # 3. Create Open3D PointCloud
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
-        pcd.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
-        
-        np_points = pcd.point.positions.numpy()
-        
+        # VTK 포인트와 색상 생성
         vtk_points = vtk.vtkPoints()
         vtk_colors = vtk.vtkUnsignedCharArray()
         vtk_colors.SetNumberOfComponents(3)
         vtk_colors.SetName("Colors")
         
-        # 색상이 있는 경우와 없는 경우 분기 처리
-        if "colors" in pcd.point:
-            np_colors = pcd.point.colors.numpy()
-            for pt, rgb in zip(np_points, np_colors):
-                vtk_points.InsertNextPoint(*pt)
-                vtk_colors.InsertNextTuple3(*rgb)
-        else:
-            # 색상이 없으면 회색으로 설정
-            gray_color = [128, 128, 128]
-            for pt in np_points:
-                vtk_points.InsertNextPoint(*pt)
-                vtk_colors.InsertNextTuple3(*gray_color)
+        # VTK 포인트와 색상 데이터 채우기
+        for i in range(points.shape[0]):
+            vtk_points.InsertNextPoint(points[i][0], points[i][1], points[i][2])
+            vtk_colors.InsertNextTuple3(
+                int(colors[i][0] * 255),  # 0-255 범위로 변환
+                int(colors[i][1] * 255),
+                int(colors[i][2] * 255)
+            )
 
         polydata = vtk.vtkPolyData()
         polydata.SetPoints(vtk_points)
@@ -98,13 +87,19 @@ class VizTools:
         try:
             # Get current image and point cloud
             img_file = self.list_img_path[self.imgIndex]
-            pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+            pcd_file_ = self.list_pcd_path[index]
+            pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
             pcd_path = os.path.join(self.pcd_dir, pcd_file)
-            print(f"Loading PCD file for RGB colorization: {pcd_path}")
             
-            # Load point cloud
-            pcd = o3d.t.io.read_point_cloud(pcd_path)
-            points_np = pcd.point.positions.numpy()
+            if not os.path.exists(pcd_path):
+                print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+                return
+            scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+            points = scan[:, :3]
+            intensity = scan[:, 3]
+            
+            # points_np를 .bin에서 읽은 points로 바로 사용
+            points_np = points
             
             # Mask NaN values
             mask = ~np.isnan(points_np).any(axis=1)
@@ -191,7 +186,21 @@ class VizTools:
             # Start the interactor
             self.vtkWidget.GetRenderWindow().GetInteractor().Initialize()
             self.vtkWidget.GetRenderWindow().Render()
-            
+
+            # --- [추가] 이미지에 해당하는 lane 들을 intensity map과 동일하게 VTK에 시각화 ---
+            if hasattr(self, 'unified_lanes'):
+                for lane in self.unified_lanes:
+                    # points_3d가 있고, 2개 이상이면 polyline, 1개면 점
+                    points_3d = lane.get('points_3d') or lane.get('vtk_points')
+                    lane_type = lane.get('type', 'Default')
+                    lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
+                    vtk_color = lane_info['vtk_color'] if 'vtk_color' in lane_info else (1,0,0)
+                    if points_3d is not None and len(points_3d) > 0:
+                        if len(points_3d) == 1:
+                            self.addLanePointsToVTK(points_3d, color=vtk_color, size=10, single_click=True)
+                        else:
+                            self.addLanePolylineToVTK(points=np.array(points_3d), color=vtk_color, width=3)
+
             print(f"Loaded RGB-colored point cloud")
             if return_actor:
                 return self.point_cloud_actor
