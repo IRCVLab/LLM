@@ -105,7 +105,7 @@ class Window(QWidget, VizTools, EventTools):
         # PCD 파일명 리스트
         self.list_pcd_path = sorted([
             f for f in os.listdir(self.pcd_dir)
-            if f.endswith('.pcd')
+            if f.endswith('.pcd.bin')
         ])
 
         self.loadImg(self.img_path)

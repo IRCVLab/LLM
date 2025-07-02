@@ -21,13 +21,26 @@ class VizTools:
     def addPointCloudToVTK(self, index=None, return_actor=False):
         if index is None:
             index = self.imgIndex if self.imgIndex >= 0 else 0
-        img_file = self.list_img_path[index]
-        pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+        pcd_file_ = self.list_pcd_path[index]
+        pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
         pcd_path = os.path.join(self.pcd_dir, pcd_file)
+        
         if not os.path.exists(pcd_path):
             print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
             return
-        pcd = o3d.t.io.read_point_cloud(pcd_path)
+        scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+        points = scan[:, :3]
+        intensity = scan[:, 3]
+        
+        # 2. Normalize intensity to [0, 1] for color
+        intensity_normalized = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
+        colors = np.stack([intensity_normalized]*3, axis=1)  # grayscale → RGB (N x 3)
+
+        # 3. Create Open3D PointCloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+        pcd.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
+        
         np_points = pcd.point.positions.numpy()
         
         vtk_points = vtk.vtkPoints()
