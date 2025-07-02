@@ -105,14 +105,14 @@ class EventTools:
 
                 
             # point cloud 준비
-            img_file = self.list_img_path[self.imgIndex]
-            pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
+            pcd_file_ = self.list_pcd_path[self.imgIndex]
+            pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
             pcd_path = os.path.join(self.pcd_dir, pcd_file)
             if not os.path.exists(pcd_path):
-                print(f"PCD file not found: {pcd_path}")
+                print(f"BIN file not found: {pcd_path}")
                 return
-            pcd = o3d.t.io.read_point_cloud(pcd_path)
-            np_points = pcd.point.positions.numpy()
+            scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+            np_points = scan[:, :3]
 
             rgb_image = self.pyt.get_array() if hasattr(self, 'pyt') else None
             points_2d = np.array([[event.xdata, event.ydata]])

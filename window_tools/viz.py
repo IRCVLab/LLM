@@ -373,6 +373,7 @@ class VizTools:
                 lane_data['vtk_actor'] = self.lane_vtk_polyline_actors[-1]
             if hasattr(self, 'vtk_lanes'):
                 self.vtk_lanes.append(points_array)
+        print("lane draw")
         return lane_data
 
     # def draw_lane_i2v(self, ):
