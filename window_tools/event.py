@@ -11,7 +11,7 @@ import math
 import open3d as o3d
 import matplotlib.pyplot as plt
 
-from utils.converter import load_calibration_params, projection_pcd_to_img, projection_img_to_pcd, interpolate_lane_curve, centripetal_catmull_rom
+from utils.converter import projection_pcd_to_img, projection_img_to_pcd, interpolate_lane_curve, centripetal_catmull_rom
 
 class EventTools:
     """
@@ -97,27 +97,17 @@ class EventTools:
         self.canvas.draw()
         # --- 2D→3D 변환 및 VTK에 시각화 ---
         try:
-            if hasattr(self, "calibration_params"):
-                t, r, k, _ = self.calibration_params
-            else:
-                t, r, k, _ = load_calibration_params()
-                self.calibration_params = (t, r, k, _)
-
                 
-            # point cloud 준비
-            pcd_file_ = self.list_pcd_path[self.imgIndex]
-            pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
-            pcd_path = os.path.join(self.pcd_dir, pcd_file)
-            if not os.path.exists(pcd_path):
-                print(f"BIN file not found: {pcd_path}")
-                return
-            scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
-            np_points = scan[:, :3]
+            # point cloud 준비: 메모리 기반으로 변경
+            points_np = self.pcd_points_np
+            mask = ~np.isnan(points_np).any(axis=1)
+            points_np = points_np[mask]
+            xyz_np = points_np[:, :3]
 
             rgb_image = self.pyt.get_array() if hasattr(self, 'pyt') else None
             points_2d = np.array([[event.xdata, event.ydata]])
             points_3d, _ = projection_img_to_pcd(
-                rgb_image, np_points, k, r, t, points_2d, single_click=True
+                rgb_image, xyz_np, self.k, self.r_lidar2cam, self.t_lidar2cam, points_2d, single_click=True
             )
             print(f"[on_mpl_click] points_3d: {points_3d}")
             # --- 연선(폴리라인) 디버깅: 이미지→3D→VTK 변환 과정 ---
@@ -129,7 +119,7 @@ class EventTools:
                 for idx, pt3d in enumerate(pts3d_iter):
                     print(f"[DEBUG][IMG→3D] Polyline idx={idx} 3D point (lidar/world): {pt3d}")
                     pt = np.array(pt3d).reshape(3, 1)
-                    pt_cam = r @ pt + t
+                    pt_cam = self.r_lidar2cam @ pt + self.t_lidar2cam
                     print(f"[DEBUG][IMG→3D] Polyline idx={idx} pt_cam (camera coords): {pt_cam.ravel()} (z={pt_cam[2,0]})")
                 print(f"[DEBUG][IMG→3D] Polyline 전체 {len(pts3d_iter)}개 3D 점 변환 완료.")
             # -------------------------------------------------------
@@ -209,13 +199,10 @@ class EventTools:
                 pcd_path = os.path.join(self.pcd_dir, pcd_file)
                 pcd = o3d.t.io.read_point_cloud(pcd_path)
                 self.pcd_points_np = pcd.point.positions.numpy()
-            if not hasattr(self, 'calibration_params'):
-                t,r,k,_ = load_calibration_params()
-            else:
-                t,r,k,_ = self.calibration_params
+                points_np = self.pcd_points_np[:, :3]
 
             rgb_img = self.pyt.get_array() if hasattr(self, 'pyt') else None
-            proj_res = projection_img_to_pcd(rgb_img, self.pcd_points_np, k, r, t,
+            proj_res = projection_img_to_pcd(rgb_img, points_np, self.k, self.r_lidar2cam, self.t_lidar2cam,
                                              np.array([[x2d, y2d]]), single_click=True)
             pts3d = proj_res[0] if isinstance(proj_res, tuple) else proj_res
             pts3d = np.asarray(pts3d).reshape(-1)
@@ -335,45 +322,43 @@ class EventTools:
             return  # handled as drag start
 
         print("[VTK click] Add new point.")
+        print("[DEBUG] Using NEW vtkCellPicker code - v3.0")
 
-        if not (hasattr(self, 'pcd_points_np') and hasattr(self, 'pcd_colors_np')):
-            try:
-                pcd_file = self.list_pcd_path[self.imgIndex]
-                pcd_path = os.path.join(self.pcd_dir, pcd_file)
-                pcd = o3d.t.io.read_point_cloud(pcd_path)
-                points_np = pcd.point.positions.numpy()
-                colors_np = pcd.point.colors.numpy() if "colors" in pcd.point else None
-                mask = ~np.isnan(points_np).any(axis=1)
-
-                points_np = points_np[mask]
-                if colors_np is not None:
-                    colors_np = colors_np[mask]
-                self.pcd_points_np = points_np
-                self.pcd_colors_np = colors_np
-            except Exception as e:
-                print(f"[VTK Click] Could not load point cloud: {e}")
-                return
-
-        min_dist = float('inf')
+        # Use vtkCellPicker with higher tolerance for point cloud picking
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)  # increased tolerance for better picking
+        
+        # Pick at the click location
+        pick_success = picker.Pick(x, y, 0, renderer)
+        
         nearest = None
-        renderer = self.vtkRenderer
-        for pt in self.pcd_points_np:
-            renderer.SetWorldPoint(pt[0], pt[1], pt[2], 1.0)
-            renderer.WorldToDisplay()
-            display_coords = renderer.GetDisplayPoint()
-            dx = display_coords[0] - x
-            dy = display_coords[1] - y
-            dist = dx*dx + dy*dy
-            if dist < min_dist:
-                min_dist = dist
-                nearest = pt
-
-        if nearest is not None:
-            print(f"[VTK CLICK] Nearest world coordinates: {nearest}")
-            renderer.SetWorldPoint(nearest[0], nearest[1], nearest[2], 1.0)
-            renderer.WorldToDisplay()
-            sx, sy, sz = renderer.GetDisplayPoint()
-
+        if pick_success:
+            # Direct pick successful - get the exact picked point
+            picked_point = picker.GetPickPosition()
+            nearest = np.array([picked_point[0], picked_point[1], picked_point[2]])
+            print(f"[VTK CLICK] CellPicker successful: {nearest}")
+        else:
+            # Fallback: manual search with optimized tolerance
+            print("[VTK CLICK] CellPicker failed, using fallback search")
+            min_dist = float('inf')
+            renderer = self.vtkRenderer
+            points_np = self.pcd_points_np[:, :3]
+            
+            # Use optimized search radius
+            max_search_dist = 15.0  # pixels - reduced for better accuracy
+            
+            for pt in points_np:
+                renderer.SetWorldPoint(pt[0], pt[1], pt[2], 1.0)
+                renderer.WorldToDisplay()
+                display_coords = renderer.GetDisplayPoint()
+                dx = display_coords[0] - x
+                dy = display_coords[1] - y
+                dist = dx*dx + dy*dy
+                
+                if dist < max_search_dist * max_search_dist and dist < min_dist:
+                    min_dist = dist
+                    nearest = pt
+            
         # --- Accumulate clicked points for VTK polyline ---
         if not hasattr(self, 'vtk_lane_points'):
             self.vtk_lane_points = []
@@ -407,23 +392,19 @@ class EventTools:
                     break
             if remove_idx:
                 break
-        # 점을 새로 추가하는 경우만 actor 생성
         self.addLanePointsToVTK(points=np.array([nearest]), color=vtk_color, size=7, single_click=True)
-        # --- 3D→2D 변환 및 이미지에 시각화 ---
+
         try:
-            if hasattr(self, "calibration_params"):
-                t, r, k, _ = self.calibration_params
-            else:
-                t, r, k, _ = load_calibration_params()
-                self.calibration_params = (t, r, k, _)
             img_shape = self.img.shape if hasattr(self, "img") else None
 
-            # --- 추가: 카메라 좌표계 변환 결과 출력 ---
+            # --- 3D → 2D 투영 ---
             pt = np.array(nearest).reshape(3, 1)
-            pt_cam = r @ pt + t  # shape (3,1)
+            pt_cam = self.r_lidar2cam @ pt + self.t_lidar2cam  # shape (3,1)
+            print(f"[VTK→IMG] 3D point: {nearest}")
+            print(f"[VTK→IMG] Camera coords: {pt_cam.flatten()} (depth: {pt_cam[2,0]:.1f}m)")
             # ------------------------------------------------
             points_2d = projection_pcd_to_img(
-                np.array([nearest]), k, r, t, img_shape, single_click=True
+                np.array([nearest]), self.k, self.r_lidar2cam, self.t_lidar2cam, img_shape, single_click=True
             )
             # ---- validate projection within image bounds ----
             if points_2d is None or len(points_2d) == 0:
@@ -432,6 +413,7 @@ class EventTools:
                 return
                 
             x_img, y_img = float(points_2d[0][0]), float(points_2d[0][1])
+            print(f"[VTK→IMG] Image coords: ({x_img:.1f}, {y_img:.1f})")
             if img_shape is not None:
                 h, w = img_shape[:2]
                 margin = 10  # pixels margin from image edges
@@ -449,6 +431,7 @@ class EventTools:
                     return
             if points_2d is not None and len(points_2d) > 0:
                 # 산점도 표시
+                print(f"[VTK→IMG] Drawing point at: ({points_2d[0][0]:.1f}, {points_2d[0][1]:.1f})")
                 artist = self.axes.scatter(
                     points_2d[0][0], points_2d[0][1],
                     s=60, facecolors='white', edgecolors=lane_info['mpl_color'], linewidths=2
@@ -548,12 +531,8 @@ class EventTools:
             lane['vtk_actor'].GetMapper().Update()
         # 4. 3D → 2D 프로젝션 및 이미지 아티스트 동기화
         try:
-            if not hasattr(self, 'calibration_params'):
-                t, r, k, _ = load_calibration_params()
-            else:
-                t, r, k, _ = self.calibration_params
             img_shape = self.img.shape if hasattr(self, 'img') else None
-            pt2d = projection_pcd_to_img(np.array([[nx, ny, nz]]), k, r, t, img_shape, single_click=True)
+            pt2d = projection_pcd_to_img(np.array([[nx, ny, nz]]), self.k, self.r_lidar2cam, self.t_lidar2cam, img_shape, single_click=True)
             if pt2d is not None and len(pt2d) > 0:
                 lane['points_2d'][ei] = [float(pt2d[0][0]), float(pt2d[0][1])]
                 if 'img_points' in lane and ei < len(lane['img_points']) and lane['img_points'][ei] is not None:
@@ -856,9 +835,6 @@ class EventTools:
         if self.imgIndex == -1:
             ind = ind + 1
 
-        # Load calibration parameters
-        t, r, k, distortion = load_calibration_params()
-        
         # Get current image path
         # Save label JSON in ./data/label/<image_basename>.json
         img_file = os.path.basename(self.list_img_path[ind])       # e.g. 000022.jpg
@@ -900,7 +876,7 @@ class EventTools:
                 # 3순위: fallback - None
 
                 sampled_3d = interpolate_lane_curve(pts3d, num_samples=num_samples)
-                sampled_2d = projection_pcd_to_img(sampled_3d, k, r, t)
+                sampled_2d = projection_pcd_to_img(sampled_3d, self.k, self.r_lidar2cam, self.t_lidar2cam)
 
 
                 if sampled_2d.shape[0] < 2:
@@ -919,8 +895,9 @@ class EventTools:
                 lane_data.append(lane_line)
 
         data = {
-            "extrinsic": r.tolist(),  # Rotation matrix
-            "intrinsic": k.tolist(),  # Intrinsic matrix
+            "rotation": self.r_lidar2cam.tolist(),  # Rotation matrix
+            "translation": self.t_lidar2cam.tolist(),  # Translation vector
+            "intrinsic": self.k.tolist(),  # Intrinsic matrix
             "file_path": image_rel_path,
             "lane_lines": lane_data
         }

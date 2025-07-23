@@ -1,30 +1,37 @@
 #!/usr/bin/env python
 # -*- coding:utf8 -*-
 import os, sys
+import os.path as osp
+import numpy as np
+
 import matplotlib
+import matplotlib.pyplot as plt
 matplotlib.use("Qt5Agg")
+
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtCore import QEvent  # 명시적으로 QEvent 추가
 from PyQt5.QtWidgets import QApplication, QShortcut
 from PyQt5.QtGui import QPen, QColor, QPainterPath, QPixmap, QBrush, QKeySequence
-
+from pyquaternion import Quaternion 
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.path import Path
-import cv2
-#from threading import Timer
 
+import cv2
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtk
 
 from window_tools.viz import VizTools
 from window_tools.event import EventTools
 from utils.updater import DelayedUpdater
-from utils.converter import load_calibration_params
 
+from nuscenes.utils.data_classes import Box
+
+from data_toolkit.TestCar.tcar import TestCar
+from data_toolkit.TestCar.tcar.utils import LidarPointCloud
 # set initial 4 points
 x1=800
 y1=100
@@ -68,10 +75,7 @@ class Window(QWidget, VizTools, EventTools):
 
     def __init__(self,path):
         super().__init__()
-        self.img_path = os.getcwd() + os.sep + path  # path는 'data'
-        self.img_dir = os.path.join(self.img_path, 'image')
-        self.pcd_dir = os.path.join(self.img_path, 'pcd')
-
+        self.data_path = os.getcwd() + os.sep + path
         # a figure instance to plot on
         self.figure = Figure(tight_layout=True, dpi=96)
         self.axes = self.figure.add_subplot(111)
@@ -79,6 +83,19 @@ class Window(QWidget, VizTools, EventTools):
         self.axes.get_xaxis().set_visible(False)
         self.axes.get_yaxis().set_visible(False)
 
+
+        self.nusc = TestCar(version='v1.0-trainval', dataroot=self.data_path, verbose=True)
+        # data token variables
+        self.scene_token = None
+        self.sample_token = None
+        self.cam_token = None
+        self.R_lidar2cam, self.t_lidar2cam, self.k, self.distortion = None, None, None, None
+        
+        self.loadImg(20)
+        self.load_scene_pcd(20)
+        self.load_calibration_params()
+        
+        
         # this is the Canvas Widget that displays the `figure`
         # it takes the `figure` instance as a parameter to __init__
         self.canvas = FigureCanvas(self.figure)
@@ -94,21 +111,20 @@ class Window(QWidget, VizTools, EventTools):
         self.vtk_lanes = []  # VTK 라벨 여러 개 저장
 
         # calibration params
-        self.t, self.r, self.k, self.distortion = load_calibration_params()
+        # self.t, self.r, self.k, self.distortion = load_calibration_params()
 
         # To store img path
-        self.list_img_path = sorted([
-            f for f in os.listdir(self.img_dir)
-            if f.endswith('.jpg') or f.endswith('.png')
-        ])
+        # self.list_img_path = sorted([
+        #     f for f in os.listdir(self.data_path)
+        #     if f.endswith('.jpg') or f.endswith('.png')
+        # ])
 
-        # PCD 파일명 리스트
-        self.list_pcd_path = sorted([
-            f for f in os.listdir(self.pcd_dir)
-            if f.endswith('.pcd.bin')
-        ])
+        # # PCD 파일명 리스트
+        # self.list_pcd_path = sorted([
+        #     f for f in os.listdir(self.pcd_dir)
+        #     if f.endswith('.pcd.bin')
+        # ])
 
-        self.loadImg(self.img_path)
 
 
         # LiDAR widget
@@ -224,7 +240,7 @@ class Window(QWidget, VizTools, EventTools):
         preImgButton.clicked.connect(self.loadPrevImage)
 
         saveButton = QPushButton("Save (x)")
-        saveButton.clicked.connect(lambda: self.saveAll(self.img_path))
+        saveButton.clicked.connect(lambda: self.saveAll(self.data_path))
 
         self.editBox = QPlainTextEdit()
         self.editBox.setFixedWidth(160)
@@ -304,6 +320,7 @@ class Window(QWidget, VizTools, EventTools):
         self.lane_curve_artists = []  # plot 반환값들
         self.all_point_artists = []   # 전체 점 아티스트 (곡선 생성 후에도 유지)
 
+       
         # __init__ 안에 추가
         self.canvas.mpl_connect('button_press_event', self.on_mpl_click)
         
@@ -314,7 +331,7 @@ class Window(QWidget, VizTools, EventTools):
         QApplication.instance().installEventFilter(self)
         
 
-        self.plotBackGround(self.img_path,0,True)
+        self.plotBackGround(self.data_path,0,True)
 
     # 단축키 함수들
     def select_yellow_line(self):
@@ -376,7 +393,7 @@ class Window(QWidget, VizTools, EventTools):
                 self.loadPrevImage()
                 return True
             elif text == 'x' or text=='ㅌ':
-                self.saveAll(self.img_path)
+                self.saveAll(self.data_path)
                 return True
             elif text == 'c' or text=='ㅊ':
                 self.loadNextImage()
@@ -404,18 +421,6 @@ class Window(QWidget, VizTools, EventTools):
         ''' Plot background method '''
         isPlot = True
         isEdge = False
-
-        """
-        if not isFirst:
-            # if not saved, popup message box
-            if self.imgIndex == len(self.list_img_path):
-                self.saveFlag = self.isPosNotChange(img_path,self.imgIndex-1)
-            else:
-                self.saveFlag = self.isPosNotChange(img_path,self.imgIndex)
-
-            if not self.saveFlag:
-                isPlot = self.msgBoxEvent()
-        """
 
 
         if hasattr(self, 'lane_curve_artists'):
@@ -460,24 +465,31 @@ class Window(QWidget, VizTools, EventTools):
                 # clean up list points
                 self.delAllLine()
 
+                path = self.list_img_path[self.imgIndex].replace('\\', '/')
 
-                #while self.list_points:
-                #    self.delLastLine()
-
-                path = img_path + '/' + self.list_img_path[self.imgIndex].replace('\\', '/')
-
-                # TODO: written for test
                 img = cv2.imread(path)
                 if img is None:
                     print(f"이미지 {path}를 불러올 수 없습니다.")
                     return
 
-                # distortion 보정
-                img_undistorted = cv2.undistort(img, self.k, self.distortion)
+                h, w = img.shape[:2]
+                K = self.k.astype(np.float64)
+                D = self.distortion.astype(np.float64)
+                # OpenCV fisheye expects distortion to be (4,1) or (4,)
+                if D.shape[0] != 4:
+                    D = np.zeros((4,), dtype=np.float64)
 
-                # matplotlib 등에서 RGB로 쓰려면 변환
+                Knew = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+                    K, D, (w, h), np.eye(3), balance=0.0
+                )
+
+                map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+                    K, D, np.eye(3), Knew, (w, h), cv2.CV_16SC2)
+                img_undistorted = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
                 img_undistorted = cv2.cvtColor(img_undistorted, cv2.COLOR_BGR2RGB)
                 self.img = img_undistorted
+                
+                self.k = Knew.copy()
                 height, width, channels = img_undistorted.shape
 
                 if isFirst:
@@ -509,15 +521,83 @@ class Window(QWidget, VizTools, EventTools):
                 elif self.colorRadio.isChecked():
                     self.addColoredPointCloudToVTK(self.imgIndex)
 
-    def loadImg(self, directory):
-        try:
-            self.list_img_path = []
-            for file in os.listdir(os.path.join(directory, 'image')):
-                if file.endswith('.jpg') or file.endswith('.png'):
-                    print(file)
-                    self.list_img_path.append(os.path.join('image', file))
-        except Exception as e:
-            sys.exit(str(e))
+    # def loadImg(self, directory):
+    #     try:
+    #         self.list_img_path = []
+    #         for file in os.listdir(os.path.join(directory, 'image')):
+    #             if file.endswith('.jpg') or file.endswith('.png'):
+    #                 print(file)
+    #                 self.list_img_path.append(os.path.join('image', file))
+    #     except Exception as e:
+    #         sys.exit(str(e))
+    def loadImg(self, scene_idx):
+        """
+        TestCar API를 사용해서 해당 scene의 모든 이미지 경로를 리스트로 저장
+        """
+        cur_scene = self.nusc.scene[scene_idx]
+
+        # scene의 첫 sample부터 순차적으로 이미지 경로 수집
+        self.sample_token = cur_scene['last_sample_token']  
+        list_img_path = []
+        while self.sample_token != '':
+            sample = self.nusc.get('sample', self.sample_token)
+            self.cam_token = sample['data']['CAM_FRONT'] 
+            cam_data = self.nusc.get('sample_data', self.cam_token)
+            img_path = os.path.join(self.data_path, cam_data['filename'])
+            list_img_path.append(img_path)
+            self.sample_token = sample['prev']
+        self.list_img_path = list_img_path
+
+    def load_scene_pcd(self, scene_idx):
+        cur_scene = self.nusc.scene[scene_idx]
+        cur_sample = self.nusc.get('sample', cur_scene['last_sample_token'])
+        sensor = 'LIDAR_TOP'
+        all_pc, all_t = LidarPointCloud.from_file_multisample(self.nusc, cur_sample, sensor, sensor, nsamples=3)
+        lidar_bin = all_pc.points.T
+        intensities = lidar_bin[:, 3]
+        intensities_normalized = (intensities - intensities.min()) / (intensities.ptp() + 1e-6)
+        
+        self.pcd_points_np = lidar_bin # (N, 4) xyz + intensity
+        self.pcd_colors_np = intensities_normalized
+
+
+    def load_calibration_params(self):
+        """Load and cache both ego→camera and ego→lidar calibration.
+        Also pre-compute LiDAR→Camera extrinsic (R_l2c, t_l2c) for later use.
+        """
+        # --- ego → Camera (from the current CAM_FRONT sample_data) ---
+        cam_sd = self.nusc.get('sample_data', self.cam_token)
+        cam_calib = self.nusc.get('calibrated_sensor', cam_sd['calibrated_sensor_token'])
+
+        # Camera intrinsics / extrinsics (ego→cam)
+        self.k = np.asarray(cam_calib['camera_intrinsic'])
+        t_cam = np.asarray(cam_calib['translation']).reshape(3, 1)  # ego → cam
+        r_cam = Quaternion(cam_calib['rotation']).rotation_matrix   # ego → cam
+
+        self.distortion = np.zeros(5)
+
+        # --- ego → LiDAR ---
+        # 같은 sample의 LIDAR_TOP 사용
+        sample = self.nusc.get('sample', cam_sd['sample_token'])
+        lidar_sd_token = sample['data']['LIDAR_TOP']
+        lidar_sd = self.nusc.get('sample_data', lidar_sd_token)
+        lidar_calib = self.nusc.get('calibrated_sensor', lidar_sd['calibrated_sensor_token'])
+
+        t_lidar = np.asarray(lidar_calib['translation']).reshape(3, 1)  # ego → lidar
+        r_lidar = Quaternion(lidar_calib['rotation']).rotation_matrix   # ego → lidar
+
+        # --- Pre-compute LiDAR → Camera (R_l2c, t_l2c) ---
+        # LiDAR→ego = (ego→LiDAR)^{-1}
+        R_l2e = r_lidar.T
+        t_l2e = -R_l2e @ t_lidar
+        R_l2e = r_lidar
+        t_l2e = t_lidar
+    
+        # LiDAR→Camera :  (ego→Cam) ⋅ (LiDAR→ego)
+        self.r_lidar2cam = r_cam @ R_l2e
+        self.t_lidar2cam = r_cam @ t_l2e + t_cam  # shape (3,1
+        S = np.diag([1, 1, -1])
+
 
     def showPosition(self):
         ''' display current labeled lanes in requested format '''
@@ -527,6 +607,7 @@ class Window(QWidget, VizTools, EventTools):
             for t in lane_types:
                 t_lower = str(t).lower().replace('_', ' ').replace('-', ' ').replace('  ', ' ')
                 t_lower = t_lower.replace('lane', '').strip()
+
                 if "white dash" in t_lower or "whitedash" in t_lower:
                     counts["White Dash lane"] += 1
                 elif "white" in t_lower:

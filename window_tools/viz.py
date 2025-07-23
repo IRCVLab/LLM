@@ -1,10 +1,11 @@
 import os
+import cv2
 import vtk
 import numpy as np
 import open3d as o3d
 
 from utils.polynomial import centripetal_catmull_rom
-from utils.converter import load_calibration_params, colorize_pcd_from_image,interpolate_lane_curve
+from utils.converter import colorize_pcd_from_image,interpolate_lane_curve
 
 from scipy.interpolate import interp1d
 
@@ -19,28 +20,41 @@ class VizTools:
         self.vtkRenderer.ResetCameraClippingRange()
 
     def addPointCloudToVTK(self, index=None, return_actor=False):
-        if index is None:
-            index = self.imgIndex if self.imgIndex >= 0 else 0
-        pcd_file_ = self.list_pcd_path[index]
-        pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
-        pcd_path = os.path.join(self.pcd_dir, pcd_file)
+        # if index is None:
+        #     index = self.imgIndex if self.imgIndex >= 0 else 0
+        # pcd_file_ = self.list_pcd_path[index]
+        # pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
+        # pcd_path = os.path.join(self.pcd_dir, pcd_file)
         
-        if not os.path.exists(pcd_path):
-            print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
-            return
-        scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
-        points = scan[:, :3]
-        intensity = scan[:, 3]
+        # if not os.path.exists(pcd_path):
+        #     print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+        #     return
+        # scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+        # points = scan[:, :3]
+        # intensity = scan[:, 3]
         
-        # 2. Normalize intensity to [0, 1] for color
-        intensity_normalized = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
+        # # 2. Normalize intensity to [0, 1] for color
+        # intensity_normalized = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
+        # colors = np.stack([intensity_normalized]*3, axis=1)  # grayscale → RGB (N x 3)
+        if hasattr(self, 'point_cloud_actor') and self.point_cloud_actor is not None:
+            self.vtkRenderer.RemoveActor(self.point_cloud_actor)
+        
+        points = self.pcd_points_np
+        # intensity는 4번째 column이라고 가정
+        
+        # intensity 기반 grayscale 컬러 생성
+        if points.shape[1] >= 4:
+            self.intensity = points[:, 3]
+        else:
+            # fallback: zeros
+            self.intensity = np.zeros(points.shape[0])
+        intensity_normalized = (self.intensity - self.intensity.min()) / (self.intensity.ptp() + 1e-8)
         colors = np.stack([intensity_normalized]*3, axis=1)  # grayscale → RGB (N x 3)
         # VTK 포인트와 색상 생성
         vtk_points = vtk.vtkPoints()
         vtk_colors = vtk.vtkUnsignedCharArray()
         vtk_colors.SetNumberOfComponents(3)
         vtk_colors.SetName("Colors")
-        
         # VTK 포인트와 색상 데이터 채우기
         for i in range(points.shape[0]):
             vtk_points.InsertNextPoint(points[i][0], points[i][1], points[i][2])
@@ -85,21 +99,21 @@ class VizTools:
         This projects the RGB image onto the point cloud.
         """
         try:
-            # Get current image and point cloud
-            img_file = self.list_img_path[self.imgIndex]
-            pcd_file_ = self.list_pcd_path[index]
-            pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
-            pcd_path = os.path.join(self.pcd_dir, pcd_file)
+            # # Get current image and point cloud
+            # img_file = self.list_img_path[self.imgIndex]
+            # pcd_file_ = self.list_pcd_path[index]
+            # pcd_file = os.path.splitext(os.path.basename(pcd_file_))[0] + '.bin'
+            # pcd_path = os.path.join(self.pcd_dir, pcd_file)
             
-            if not os.path.exists(pcd_path):
-                print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
-                return
-            scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
-            points = scan[:, :3]
-            intensity = scan[:, 3]
+            # if not os.path.exists(pcd_path):
+            #     print(f"PCD 파일이 존재하지 않습니다: {pcd_path}")
+            #     return
+            # scan = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+            # points = scan[:, :3]
+            # intensity = scan[:, 3]
             
             # points_np를 .bin에서 읽은 points로 바로 사용
-            points_np = points
+            points_np = self.pcd_points_np[:, :3]
             
             # Mask NaN values
             mask = ~np.isnan(points_np).any(axis=1)
@@ -107,37 +121,21 @@ class VizTools:
             
             # Get RGB image
             rgb_image = self.img if hasattr(self, 'img') else None
-            if rgb_image is None:
-                # Try loading image from disk directly
-                base_name = os.path.basename(img_file)
-                img_path_full = os.path.join(self.img_dir, base_name) if hasattr(self, 'img_dir') else None
-                print("[Colorize] trying image path:", img_path_full)
-                if img_path_full and os.path.exists(img_path_full):
-                    import cv2
-                    img = cv2.imread(img_path_full)
-                    if img is not None:
-                        if hasattr(self, 'k') and hasattr(self, 'distortion'):
-                            img = cv2.undistort(img, self.k, self.distortion)
-                        rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                if rgb_image is None:
-                    print("RGB image not available (even after disk read)")
-                    self.addPointCloudToVTK()
-                    return
-
+            
 
             # Robust check: skip rendering if any required data is missing
-            if rgb_image is None or points_np is None or points_np.size == 0 or self.k is None or self.r is None or self.t is None:
+            if rgb_image is None or points_np is None or points_np.size == 0 or self.k is None or self.r_lidar2cam is None or self.t_lidar2cam is None:
                 print("[WARNING] Skipping VTK colorization: missing data.")
                 print(f"  rgb_image: {type(rgb_image)}, shape: {getattr(rgb_image, 'shape', None)}")
                 print(f"  points_np: {type(points_np)}, shape: {getattr(points_np, 'shape', None)}, size: {getattr(points_np, 'size', None)}")
                 print(f"  k: {self.k}")
-                print(f"  r: {self.r}")
-                print(f"  t: {self.t}")
+                print(f"  r: {self.r_lidar2cam}")
+                print(f"  t: {self.t_lidar2cam}")
                 return
 
             # Colorize the point cloud
             vtk_points, vtk_colors, rgb_values = colorize_pcd_from_image(
-                points_np, rgb_image, self.k, self.r, self.t
+                points_np, rgb_image, self.k, self.r_lidar2cam, self.t_lidar2cam
             )
             
             # Create VTK polydata
@@ -180,8 +178,7 @@ class VizTools:
             self.vtkRenderer.ResetCamera()
             
             # Store point cloud data for later use
-            self.pcd_points_np = points_np
-            self.pcd_colors_np = rgb_values
+            # self.pcd_points_np = points_np
             
             # Start the interactor
             self.vtkWidget.GetRenderWindow().GetInteractor().Initialize()
@@ -210,8 +207,6 @@ class VizTools:
             traceback.print_exc()
             # Fall back to regular point cloud
             self.addPointCloudToVTK()
-        # 탑다운 시점 고정 (항상 except 밖에서 호출)
-        # self.setTopDownView()
 
     def addLanePolylineToVTK(self, points, color=(1,0,0), width=4):
 
@@ -253,11 +248,19 @@ class VizTools:
         color: RGB tuple (0~1)
         size: point size
         """
-
+        points = np.asarray(points)
         if points is None or len(points) == 0:
             print("lane_points_3d가 비어 있습니다.")
             return
-
+        if points.ndim == 1:
+            points = points.reshape(1, -1)
+        elif points.ndim == 2 and points.shape[1] > 3:
+            points = points[:, :3]
+        
+        if points.shape[1] >= 4:
+            intensity = points[:, 3]
+        else:
+            intensity = np.zeros(points.shape[0])
         # Build vtkPoints from input array/list
         vtk_points = vtk.vtkPoints()
         arr = np.asarray(points)
@@ -375,126 +378,3 @@ class VizTools:
                 self.vtk_lanes.append(points_array)
         print("lane draw")
         return lane_data
-
-    # def draw_lane_i2v(self, ):
-    #     if len(self.lane_points) < 2:
-    #         return
-    #     xs, ys = centripetal_catmull_rom(self.lane_points)
-    #     lane_type = None
-    #     if self.beforeRadioChecked == self.lineRadio1:  # Yellow Line
-    #         lane_type = 'Yellow'
-    #     elif self.beforeRadioChecked == self.lineRadio2:  # White Line
-    #         lane_type = 'White'
-    #     elif self.beforeRadioChecked == self.lineRadio3:  # White Dash Line
-    #         lane_type = 'WhiteDash'
-    #     if lane_type:
-    #         lane_info = self.LANE_COLORS[lane_type]
-    #         color = lane_info['mpl_color']
-    #         vtk_color = lane_info['vtk_color']
-    #         linestyle = '-' if lane_type != 'WhiteDash' else '--'
-    #         self.list_points_type.append(lane_type)
-    #     else:
-    #         lane_info = self.LANE_COLORS['Default']
-    #         color = lane_info['mpl_color']
-    #         vtk_color = lane_info['vtk_color']
-    #         linestyle = '-'
-    #         self.list_points_type.append('Unknown')
-    #     curve_artist, = self.axes.plot(xs, ys, linestyle, color=color)
-    #     self.lane_curve_artists.append(curve_artist)
-    #     n = len(self.lane_points)
-    #     if self.lane_labels:
-    #         last_end = self.lane_labels[-1][1]
-    #     else:
-    #         last_end = 0
-    #     self.lane_labels.append((last_end, last_end + n))
-    #     used_points = self.lane_points.copy()
-    #     self.lane_points = []
-    #     self.lane_point_artists = []
-    #     self.canvas.draw()
-    #     lane_polyline_img_coords = [(int(x), int(y)) for x, y in zip(xs, ys)]
-    #     rgb_image = self.pyt.get_array() if hasattr(self, 'pyt') else None
-    #     if rgb_image is None:
-    #         print("Image data not available")
-    #         return
-        
-    #     img_file = self.list_img_path[self.imgIndex]
-    #     pcd_file = os.path.splitext(os.path.basename(img_file))[0] + '.pcd'
-    #     pcd_path = os.path.join(self.pcd_dir, pcd_file)
-    #     if not os.path.exists(pcd_path):
-    #         print(f"PCD file not found: {pcd_path}")
-    #         return
-    #     pcd = o3d.t.io.read_point_cloud(pcd_path)
-    #     np_points = pcd.point.positions.numpy()
-    #     lane_points_3d, points_2d = projection_img_to_pcd(
-    #         rgb_image,
-    #         np_points,
-    #         self.k,
-    #         self.r,
-    #         self.t,
-    #         lane_polyline_img_coords,
-    #         lane_thickness=3
-    #     )
-    #     if lane_points_3d.shape[0] == 4:
-    #         points_3d = lane_points_3d[:3, :].T
-    #     else:
-    #         points_3d = lane_points_3d.T
-    #     new_sampled_pts, new_sampled_uv = sample_lane_points(points_3d.T, points_2d, num_samples=20)
-    #     self.sampled_pts.append(new_sampled_pts)
-    #     self.sampled_uv.append(new_sampled_uv)
-    #     self.addLanePointsToVTK(new_sampled_pts, color=vtk_color, size=5)
-
-
-    # def draw_lane_v2i(self):
-    #     # 1. 이미지(plt)에서 찍은 점으로 기존대로 처리
-    #     if len(self.lane_points) >= 2:
-    #         self.draw_lane_curve()
-    #     # 2. VTK에서 찍은 점이 2개 이상이면 VTK에 선 그리기 (여러 라인 지원)
-    #     if not hasattr(self, 'vtk_lanes'):
-    #         self.vtk_lanes = []
-    #     if hasattr(self, 'vtk_lane_points') and len(self.vtk_lane_points) >= 2:
-    #         lane_type = None
-    #         if self.beforeRadioChecked == self.lineRadio1:
-    #             lane_type = 'Yellow'
-    #         elif self.beforeRadioChecked == self.lineRadio2:
-    #             lane_type = 'White'
-    #         elif self.beforeRadioChecked == self.lineRadio3:
-    #             lane_type = 'WhiteDash'
-    #         lane_info = self.LANE_COLORS.get(lane_type, self.LANE_COLORS['Default'])
-    #         color = lane_info['mpl_color']
-    #         vtk_color = lane_info['vtk_color']
-    #         linestyle = '-' if lane_type != 'WhiteDash' else '--'
-    #         # VTK polyline → 이미지로 투영
-            
-    #         rgb_image = self.pyt.get_array() if hasattr(self, 'pyt') else None
-    #         img_shape = rgb_image.shape if rgb_image is not None else None
-    #         lane_polyline_lidar = np.array(self.vtk_lane_points)  # (N, 3)
-    #         lane_polyline_img = projection_pcd_to_img(
-    #             lane_polyline_lidar,
-    #             self.k,
-    #             self.r,
-    #             self.t,
-    #             img_shape
-    #         )  # (M, 2)
-    #         # 이미지 위에 2D polyline 시각화 (matplotlib)
-
-    #         if hasattr(self, 'axes') and lane_polyline_img.shape[0] >= 2 and img_shape is not None:
-    #             import cv2
-    #             H, W = img_shape[:2]
-    #             clipped_segments = []
-    #             for i in range(len(lane_polyline_img)-1):
-    #                 pt1 = tuple(np.round(lane_polyline_img[i]).astype(int))
-    #                 pt2 = tuple(np.round(lane_polyline_img[i+1]).astype(int))
-    #                 inside, p1, p2 = cv2.clipLine((0,0,W-1,H-1), pt1, pt2)
-    #                 if inside:
-    #                     xs = [p1[0], p2[0]]
-    #                     ys = [p1[1], p2[1]]
-    #                     curve_artist, = self.axes.plot(xs, ys, linestyle, color=color, linewidth=2, zorder=10)
-    #                     self.lane_curve_artists.append(curve_artist)
-    #             self.canvas.draw()
-    #         else:
-    #             print("[DEBUG] Cannot draw: axes?", hasattr(self, 'axes'), "polyline shape:", lane_polyline_img.shape)
-
-    #         # 기존대로 VTK에도 선 추가
-    #         self.vtk_lanes.append(self.vtk_lane_points.copy())
-    #         self.addLanePolylineToVTK(points=lane_polyline_lidar, color=vtk_color, width=3)
-    #         self.vtk_lane_points = []  # 버퍼 초기화

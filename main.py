@@ -14,7 +14,7 @@ def inputArg():
 
 
 if __name__ == "__main__":
-    inputPath = "data"
+    inputPath = "data/TCAR_DATA"
     w = genWindow(inputPath)
 
 

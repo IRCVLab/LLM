@@ -76,13 +76,6 @@ def sample_lane_points(points_3d, points_2d, num_samples=20):
     return sampled_3d, sampled_2d
 
 
-def load_calibration_params():
-    k = np.load("./calibration/k.npy")
-    r = np.load("./calibration/r.npy")
-    t = np.load("./calibration/t.npy")
-    distortion = np.load(f"./calibration/distortion.npy")
-    return t, r, k, distortion
-
 def create_lane_mask(image_shape, lane_points, thickness):
 
     mask = np.zeros(image_shape[:2], dtype=np.uint8)
@@ -173,7 +166,7 @@ def projection_img_to_pcd(
     lane_thickness=5,
     single_click=False):
 
-    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000.0
+    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1)
 
     # front points만 필터링
     points_in_front = filter_points_in_front(point_cloud)
@@ -259,7 +252,7 @@ def projection_pcd_to_img(
         elif lane_polyline_lidar.ndim == 2 and lane_polyline_lidar.shape[0] == 3 and lane_polyline_lidar.shape[1] != 3:
             lane_polyline_lidar = lane_polyline_lidar.T
         # 변환
-        t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1) / 1000.0
+        t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1)
         lane_polyline_cam = transform_to_camera(lane_polyline_lidar, r_lidar_to_camera, t_lidar_to_camera)  # (3, 1)
         lane_polyline_img = project_to_image(lane_polyline_cam, k)  # (1, 2)
         z_cam = lane_polyline_cam[2, :]
@@ -275,7 +268,7 @@ def projection_pcd_to_img(
             return np.empty((0, 2))
         return lane_polyline_img
     else:
-        t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1) / 1000.0
+        t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1)
         lane_polyline_cam = transform_to_camera(lane_polyline_lidar, r_lidar_to_camera, t_lidar_to_camera)  # (3, N)
         lane_polyline_img = project_to_image(lane_polyline_cam, k)  # (N, 2)
         z_cam = lane_polyline_cam[2, :]
@@ -299,7 +292,7 @@ def colorize_pcd_from_image(
     r_lidar_to_camera,    # (3, 3) extrinsic rotation
     t_lidar_to_camera,):
 
-    t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1) / 1000.0
+    t_lidar_to_camera = t_lidar_to_camera.reshape(-1, 1)
     # Remove filter_points_in_front; use all points
     points_in_camera = transform_to_camera(point_cloud_np, r_lidar_to_camera, t_lidar_to_camera)  # (3, N)
     # points_in_camera = ax @ points_in_camera
@@ -362,7 +355,7 @@ def lidar_points_in_image(
     r_lidar_to_camera_coordinate,
     t_lidar_to_camera_coordinate, 
 ):
-    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1) / 1000
+    t_lidar_to_camera_coordinate = t_lidar_to_camera_coordinate.reshape(-1, 1)
 
     # keep points that are in front of LiDAR
     points_in_front_of_lidar = []
